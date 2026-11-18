@@ -236,7 +236,7 @@ pub fn aes_decrypt_gcm(
 
 pub fn aes_encrypt_ctr(plaintext: &[u8], key: &[u8], iv: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let mut cipher =
-        Aes256Ctr::new_from_slice(key, iv).map_err(|_| CryptoError::InvalidKeyLength)?;
+        Aes256Ctr::new_from_slices(key, iv).map_err(|_| CryptoError::InvalidKeyLength)?;
     let mut out = plaintext.to_vec();
     cipher.apply_keystream(&mut out);
     Ok(out)
@@ -252,7 +252,7 @@ pub fn aes_decrypt_with_iv(
     iv: &[u8],
 ) -> Result<Vec<u8>, CryptoError> {
     let cipher =
-        Aes256CbcDec::new_from_slice(key, iv).map_err(|_| CryptoError::InvalidKeyLength)?;
+        Aes256CbcDec::new_from_slices(key, iv).map_err(|_| CryptoError::InvalidKeyLength)?;
     cipher
         .decrypt_padded_vec_mut::<Pkcs7>(buffer)
         .map_err(|_| CryptoError::DecryptionFailed)
@@ -271,7 +271,7 @@ pub fn aes_encrypt_with_iv(
     iv: &[u8],
 ) -> Result<Vec<u8>, CryptoError> {
     let cipher =
-        Aes256CbcEnc::new_from_slice(key, iv).map_err(|_| CryptoError::InvalidKeyLength)?;
+        Aes256CbcEnc::new_from_slices(key, iv).map_err(|_| CryptoError::InvalidKeyLength)?;
     Ok(cipher.encrypt_padded_vec_mut::<Pkcs7>(buffer))
 }
 
