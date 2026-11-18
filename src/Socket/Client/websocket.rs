@@ -19,6 +19,46 @@ enum WsCommand {
     Close,
 }
 
+#[derive(Clone)]
+pub struct WebSocketSender {
+    state: Arc<AtomicU8>,
+    cmd_tx: mpsc::UnboundedSender<WsCommand>,
+}
+
+impl WebSocketSender {
+    pub fn ready_state(&self) -> SocketReadyState {
+        SocketReadyState::from(self.state.load(Ordering::SeqCst))
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.ready_state() == SocketReadyState::Open
+    }
+
+    pub fn send_bytes(&self, data: Vec<u8>) -> bool {
+        self.cmd_tx.send(WsCommand::SendBinary(data)).is_ok()
+    }
+
+    pub fn send_text(&self, text: String) -> bool {
+        self.cmd_tx.send(WsCommand::SendText(text)).is_ok()
+    }
+
+    pub fn close(&self) {
+        self.state
+            .store(SocketReadyState::Closing as u8, Ordering::SeqCst);
+        let _ = self.cmd_tx.send(WsCommand::Close);
+    }
+}
+
+pub struct WebSocketReceiver {
+    event_rx: mpsc::UnboundedReceiver<WebSocketEvent>,
+}
+
+impl WebSocketReceiver {
+    pub async fn recv(&mut self) -> Option<WebSocketEvent> {
+        self.event_rx.recv().await
+    }
+}
+
 pub struct WebSocketClient {
     url: String,
     config: SocketConfig,
@@ -167,6 +207,18 @@ impl WebSocketClient {
         self.cmd_tx = Some(cmd_tx);
         self.event_rx = Some(event_rx);
         Ok(())
+    }
+
+    pub fn split(mut self) -> Option<(WebSocketSender, WebSocketReceiver)> {
+        let cmd_tx = self.cmd_tx.take()?;
+        let event_rx = self.event_rx.take()?;
+        Some((
+            WebSocketSender {
+                state: Arc::clone(&self.state),
+                cmd_tx,
+            },
+            WebSocketReceiver { event_rx },
+        ))
     }
 
     pub fn send_bytes(&self, data: Vec<u8>) -> bool {

@@ -1,11 +1,15 @@
 pub mod browser_utils;
+pub mod companion_reg_client_utils;
 pub mod crypto;
+pub mod generics;
 pub mod noise_handler;
 pub mod use_multi_file_auth_state;
 pub mod validate_connection;
 
 pub use browser_utils::*;
+pub use companion_reg_client_utils::*;
 pub use crypto::*;
+pub use generics::*;
 pub use noise_handler::*;
 pub use use_multi_file_auth_state::*;
 pub use validate_connection::*;
