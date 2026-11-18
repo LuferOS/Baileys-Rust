@@ -3,6 +3,8 @@ pub mod client;
 pub mod groups;
 pub mod messages_recv;
 pub mod messages_send;
+pub mod mex;
+pub mod newsletter;
 pub mod socket;
 pub mod usync;
 
@@ -10,5 +12,7 @@ pub use client::*;
 pub use groups::*;
 pub use messages_recv::*;
 pub use messages_send::*;
+pub use mex::*;
+pub use newsletter::*;
 pub use socket::*;
 pub use usync::*;
