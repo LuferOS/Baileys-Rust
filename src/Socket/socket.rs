@@ -129,7 +129,7 @@ impl WaSocket {
         let client_finish = HandshakeMessage {
             client_finish: Some(handshake_message::ClientFinish {
                 r#static: Some(key_enc),
-                payload: Some(payload_enc),
+                payload: Some(payload_enc), ..Default::default()
             }),
             ..Default::default()
         };
