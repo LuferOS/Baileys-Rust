@@ -5,12 +5,11 @@ use std::path::PathBuf;
 fn sanitize_proto3_enums(src: &str) -> String {
     let bytes = src.as_bytes();
     let len = bytes.len();
-    let mut out = String::with_capacity(len + 1024);
+    let mut out = String::with_capacity(len + 2048);
     let mut i = 0;
     let mut zero_counter = 0usize;
 
     while i < len {
-        // Copiar comentarios de línea intactos
         if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
             let start = i;
             while i < len && bytes[i] != b'\n' {
@@ -20,15 +19,27 @@ fn sanitize_proto3_enums(src: &str) -> String {
             continue;
         }
 
-        // Detectar palabra clave `enum `
         let is_enum_kw = src[i..].starts_with("enum")
             && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_'))
             && i + 4 < len
             && bytes[i + 4].is_ascii_whitespace();
 
         if is_enum_kw {
-            if let Some(rel_open) = src[i..].find('{') {
-                let open_idx = i + rel_open;
+            let mut j = i + 4;
+            while j < len && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            let ident_start = j;
+            while j < len && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                j += 1;
+            }
+            let has_ident = j > ident_start;
+            while j < len && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+
+            if has_ident && j < len && bytes[j] == b'{' {
+                let open_idx = j;
                 if let Some(rel_close) = src[open_idx + 1..].find('}') {
                     let close_idx = open_idx + 1 + rel_close;
                     let header = &src[i..=open_idx];
@@ -53,12 +64,7 @@ fn sanitize_proto3_enums(src: &str) -> String {
 }
 
 fn parse_enum_value_num(stmt: &str) -> Option<i64> {
-    let trimmed = stmt.trim();
-    if trimmed.is_empty() || trimmed.starts_with("option ") || trimmed.starts_with("reserved ") {
-        return None;
-    }
-    // Quitar comentarios iniciales dentro del bloque
-    let mut clean = trimmed;
+    let mut clean = stmt.trim();
     while clean.starts_with("//") {
         if let Some(nl) = clean.find('\n') {
             clean = clean[nl + 1..].trim();
@@ -66,6 +72,7 @@ fn parse_enum_value_num(stmt: &str) -> Option<i64> {
             return None;
         }
     }
+    clean = clean.trim_end_matches(';').trim();
     if clean.is_empty() || clean.starts_with("option ") || clean.starts_with("reserved ") {
         return None;
     }
@@ -126,7 +133,7 @@ fn fix_enum_body(body: &str, zero_counter: &mut usize) -> String {
         *zero_counter += 1;
         statements.insert(
             first_idx,
-            format!(" PROTO3_AUTO_ZERO_{} = 0;", *zero_counter),
+            format!("\n    PROTO3_AUTO_ZERO_{} = 0;\n", *zero_counter),
         );
     }
 
