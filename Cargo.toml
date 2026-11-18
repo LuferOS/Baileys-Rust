@@ -1,0 +1,10 @@
+[package]
+name = "baileys-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bytes = "1"
+flate2 = "1"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
