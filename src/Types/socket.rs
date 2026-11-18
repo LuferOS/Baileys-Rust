@@ -3,6 +3,7 @@ use crate::defaults::{
     DEFAULT_QUERY_TIMEOUT_MS, DEFAULT_WA_WEBSOCKET_URL,
 };
 use crate::utils::browser_utils::Browsers;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct SocketConfig {
@@ -16,6 +17,7 @@ pub struct SocketConfig {
     pub sync_full_history: bool,
     pub country_code: String,
     pub push_name: Option<String>,
+    pub headers: HashMap<String, String>,
 }
 
 impl Default for SocketConfig {
@@ -31,6 +33,7 @@ impl Default for SocketConfig {
             sync_full_history: true,
             country_code: "US".to_string(),
             push_name: None,
+            headers: HashMap::new(),
         }
     }
 }

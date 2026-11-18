@@ -13,15 +13,20 @@ cipher = { version = "0.4", features = ["alloc", "block-padding"] }
 ctr = "0.9"
 curve25519-dalek = "4"
 flate2 = "1"
+futures-util = "0.3"
 hkdf = "0.12"
 hmac = "0.12"
 md-5 = "0.10"
 pbkdf2 = { version = "0.12", features = ["hmac"] }
 prost = "0.13"
 rand = "0.8"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "net"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 
 [build-dependencies]
