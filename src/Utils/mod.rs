@@ -1,6 +1,7 @@
 pub mod browser_utils;
 pub mod companion_reg_client_utils;
 pub mod crypto;
+pub mod decode_wa_message;
 pub mod generics;
 pub mod noise_handler;
 pub mod signal;
@@ -10,6 +11,7 @@ pub mod validate_connection;
 pub use browser_utils::*;
 pub use companion_reg_client_utils::*;
 pub use crypto::*;
+pub use decode_wa_message::*;
 pub use generics::*;
 pub use noise_handler::*;
 pub use signal::*;

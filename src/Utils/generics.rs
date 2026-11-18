@@ -36,6 +36,27 @@ pub fn bytes_to_crockford(buffer: &[u8]) -> String {
     out
 }
 
+pub fn pad_random_max_16(msg: &[u8]) -> Vec<u8> {
+    let mut pad_byte = [0u8; 1];
+    OsRng.fill_bytes(&mut pad_byte);
+    let pad_len = usize::from((pad_byte[0] & 0x0f) + 1);
+    let mut out = Vec::with_capacity(msg.len() + pad_len);
+    out.extend_from_slice(msg);
+    out.resize(msg.len() + pad_len, pad_len as u8);
+    out
+}
+
+pub fn unpad_random_max_16(buf: &[u8]) -> Result<&[u8], &'static str> {
+    if buf.is_empty() {
+        return Err("unpadPkcs7 given empty bytes");
+    }
+    let pad_len = usize::from(*buf.last().unwrap());
+    if pad_len == 0 || pad_len > buf.len() {
+        return Err("unpad invalid pad length");
+    }
+    Ok(&buf[..buf.len() - pad_len])
+}
+
 pub fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -87,6 +108,16 @@ mod tests {
         let prefix = generate_md_tag_prefix();
         assert!(prefix.ends_with('-'));
         assert!(prefix.contains('.'));
+    }
+
+    #[test]
+    fn test_pad_unpad_random_max_16() {
+        let raw = b"hola mundo whatsapp";
+        let padded = pad_random_max_16(raw);
+        assert!(padded.len() > raw.len());
+        assert!(padded.len() <= raw.len() + 16);
+        let unpadded = unpad_random_max_16(&padded).unwrap();
+        assert_eq!(unpadded, raw);
     }
 
     #[test]
