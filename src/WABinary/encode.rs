@@ -1,3 +1,4 @@
+use super::constants::DEFAULT_CODING_OPTIONS;
 use super::jid_utils::{jid_decode, FullJid};
 use super::types::{BinaryNode, BinaryNodeCodingOptions, BinaryNodeData, BinaryNodeError, Tags};
 
@@ -5,6 +6,10 @@ use super::types::{BinaryNode, BinaryNodeCodingOptions, BinaryNodeData, BinaryNo
 enum PackType {
     Nibble,
     Hex,
+}
+
+pub fn encode_binary_node(node: &BinaryNode) -> Result<Vec<u8>, BinaryNodeError> {
+    encode_binary_node_with_opts(node, &DEFAULT_CODING_OPTIONS)
 }
 
 pub fn encode_binary_node_with_opts(
