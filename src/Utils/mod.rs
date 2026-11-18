@@ -6,6 +6,7 @@ pub mod generics;
 pub mod messages;
 pub mod noise_handler;
 pub mod signal;
+pub mod stanza_ack;
 pub mod use_multi_file_auth_state;
 pub mod validate_connection;
 
@@ -17,5 +18,6 @@ pub use generics::*;
 pub use messages::*;
 pub use noise_handler::*;
 pub use signal::*;
+pub use stanza_ack::*;
 pub use use_multi_file_auth_state::*;
 pub use validate_connection::*;
