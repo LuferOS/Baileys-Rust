@@ -1,7 +1,9 @@
-use crate::proto::MessageKey;
+use crate::proto::{Message, MessageKey};
 use crate::types::{DisconnectReason, WaMessageKey};
 use crate::utils::crypto::sha256;
 use crate::wa_binary::{get_all_binary_node_children, BinaryNode};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use prost::Message as ProstMessage;
 use rand::{rngs::OsRng, RngCore};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -57,6 +59,22 @@ pub fn unpad_random_max_16(buf: &[u8]) -> Result<&[u8], &'static str> {
         return Err("unpad invalid pad length");
     }
     Ok(&buf[..buf.len() - pad_len])
+}
+
+pub fn encode_wa_message(message: &Message) -> Vec<u8> {
+    pad_random_max_16(&message.encode_to_vec())
+}
+
+pub fn encode_newsletter_message(message: &Message) -> Vec<u8> {
+    message.encode_to_vec()
+}
+
+pub fn generate_participant_hash_v2(participants: &[String]) -> String {
+    let mut sorted = participants.to_vec();
+    sorted.sort();
+    let joined = sorted.join("");
+    let hash_b64 = BASE64.encode(sha256(joined.as_bytes()));
+    format!("2:{}", &hash_b64[..6])
 }
 
 pub fn now_millis() -> u64 {
@@ -168,10 +186,22 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_message_id_v2() {
+    fn test_generate_message_id_v2_and_phash() {
         let id = generate_message_id_v2(Some("573001234567@s.whatsapp.net"));
         assert_eq!(id.len(), 22);
         assert!(id.starts_with("3EB0"));
+
+        let h1 = generate_participant_hash_v2(&[
+            "b@s.whatsapp.net".to_string(),
+            "a@s.whatsapp.net".to_string(),
+        ]);
+        let h2 = generate_participant_hash_v2(&[
+            "a@s.whatsapp.net".to_string(),
+            "b@s.whatsapp.net".to_string(),
+        ]);
+        assert_eq!(h1, h2);
+        assert!(h1.starts_with("2:"));
+        assert_eq!(h1.len(), 8);
     }
 
     #[test]
