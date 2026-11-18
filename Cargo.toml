@@ -16,8 +16,12 @@ hkdf = "0.12"
 hmac = "0.12"
 md-5 = "0.10"
 pbkdf2 = { version = "0.12", features = ["hmac"] }
+prost = "0.13"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 thiserror = "2"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
+
+[build-dependencies]
+prost-build = "0.13"

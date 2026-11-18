@@ -1,3 +1,6 @@
+#[path = "Defaults/mod.rs"]
+pub mod defaults;
+pub mod proto;
 #[path = "Types/mod.rs"]
 pub mod types;
 #[path = "Utils/mod.rs"]
