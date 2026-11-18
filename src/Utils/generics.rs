@@ -1,4 +1,6 @@
-use crate::types::DisconnectReason;
+use crate::proto::MessageKey;
+use crate::types::{DisconnectReason, WaMessageKey};
+use crate::utils::crypto::sha256;
 use crate::wa_binary::{get_all_binary_node_children, BinaryNode};
 use rand::{rngs::OsRng, RngCore};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -64,6 +66,61 @@ pub fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
+pub fn unix_timestamp_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+pub fn generate_message_id_v2(user_id: Option<&str>) -> String {
+    let mut data = Vec::with_capacity(64);
+    data.extend_from_slice(&unix_timestamp_seconds().to_be_bytes());
+    if let Some(uid) = user_id {
+        if let Some(user) = uid.split('@').next() {
+            data.extend_from_slice(user.as_bytes());
+            data.extend_from_slice(b"@c.us");
+        }
+    }
+    let mut rand_buf = [0u8; 16];
+    OsRng.fill_bytes(&mut rand_buf);
+    data.extend_from_slice(&rand_buf);
+
+    let hash = sha256(&data);
+    let mut hex = String::with_capacity(22);
+    hex.push_str("3EB0");
+    for &b in &hash[..9] {
+        hex.push_str(&format!("{:02X}", b));
+    }
+    hex
+}
+
+pub fn get_key_author(key: Option<&WaMessageKey>, me_id: Option<&str>) -> String {
+    let Some(key) = key else {
+        return String::new();
+    };
+    if key.from_me == Some(true) {
+        return me_id.unwrap_or("me").to_string();
+    }
+    key.participant
+        .clone()
+        .or_else(|| key.remote_jid.clone())
+        .unwrap_or_default()
+}
+
+pub fn get_proto_key_author(key: Option<&MessageKey>, me_id: Option<&str>) -> String {
+    let Some(key) = key else {
+        return String::new();
+    };
+    if key.from_me == Some(true) {
+        return me_id.unwrap_or("me").to_string();
+    }
+    key.participant
+        .clone()
+        .or_else(|| key.remote_jid.clone())
+        .unwrap_or_default()
+}
+
 pub fn get_error_code_from_stream_error(node: &BinaryNode) -> (String, u16) {
     let reason_node = get_all_binary_node_children(node).first();
     let mut reason = reason_node
@@ -108,6 +165,13 @@ mod tests {
         let prefix = generate_md_tag_prefix();
         assert!(prefix.ends_with('-'));
         assert!(prefix.contains('.'));
+    }
+
+    #[test]
+    fn test_generate_message_id_v2() {
+        let id = generate_message_id_v2(Some("573001234567@s.whatsapp.net"));
+        assert_eq!(id.len(), 22);
+        assert!(id.starts_with("3EB0"));
     }
 
     #[test]

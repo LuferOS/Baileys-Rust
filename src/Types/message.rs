@@ -1,4 +1,4 @@
-use crate::proto::Message;
+use crate::proto::{Message, MessageKey, PollUpdate, Reaction, UserReceipt};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,6 +34,27 @@ pub struct WaMessageKey {
     pub is_view_once: Option<bool>,
 }
 
+impl WaMessageKey {
+    pub fn to_proto(&self) -> MessageKey {
+        MessageKey {
+            remote_jid: self.remote_jid.clone(),
+            from_me: self.from_me,
+            id: self.id.clone(),
+            participant: self.participant.clone(),
+        }
+    }
+
+    pub fn from_proto(key: &MessageKey) -> Self {
+        Self {
+            remote_jid: key.remote_jid.clone(),
+            from_me: key.from_me,
+            id: key.id.clone(),
+            participant: key.participant.clone(),
+            ..Default::default()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WaMessage {
     pub key: WaMessageKey,
@@ -42,9 +63,13 @@ pub struct WaMessage {
     pub push_name: Option<String>,
     pub broadcast: Option<bool>,
     pub status: Option<i32>,
+    pub participant: Option<String>,
     pub verified_biz_name: Option<String>,
     pub retry_count: Option<u32>,
     pub message: Option<Message>,
     pub message_stub_type: Option<i32>,
     pub message_stub_parameters: Vec<String>,
+    pub user_receipt: Vec<UserReceipt>,
+    pub reactions: Vec<Reaction>,
+    pub poll_updates: Vec<PollUpdate>,
 }
