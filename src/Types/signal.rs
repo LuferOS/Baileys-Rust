@@ -73,6 +73,12 @@ pub struct EncryptedMessage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EncryptedGroupMessage {
+    pub ciphertext: Vec<u8>,
+    pub sender_key_distribution_message: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub base_key: Vec<u8>,
     pub registration_id: u32,

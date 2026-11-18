@@ -1,11 +1,15 @@
+use super::group::{
+    GroupCipher, GroupCipherError, GroupSessionBuilder, GroupSessionError,
+    SenderKeyDistributionError, SenderKeyDistributionMessage, SenderKeyName, SenderKeyRecord,
+};
 use super::lid_mapping::{LidMappingStore, PnToLidCallback};
 use super::protocol::{
     decode_pre_key_signal_message, PreKeySignalMessageProto, ProtocolError, SessionRecord,
     SessionState,
 };
 use crate::types::{
-    E2ESession, EncryptedMessage, KeyPair, MessageCipherType, MigrateSessionResult,
-    ProtocolAddress, SessionInfo, SessionValidation,
+    E2ESession, EncryptedGroupMessage, EncryptedMessage, KeyPair, MessageCipherType,
+    MigrateSessionResult, ProtocolAddress, SessionInfo, SessionValidation,
 };
 use crate::utils::crypto::generate_signal_pub_key;
 use crate::utils::use_multi_file_auth_state::{AuthStateError, MultiFileAuthState};
@@ -37,8 +41,16 @@ pub enum SignalError {
     Json(#[from] serde_json::Error),
     #[error("protocol error: {0}")]
     Protocol(#[from] ProtocolError),
+    #[error("group cipher error: {0}")]
+    GroupCipher(#[from] GroupCipherError),
+    #[error("group session error: {0}")]
+    GroupSession(#[from] GroupSessionError),
+    #[error("sender key distribution error: {0}")]
+    SenderKeyDistribution(#[from] SenderKeyDistributionError),
     #[error("missing pre-key {0} in storage")]
     MissingPreKey(u32),
+    #[error("group id is required for sender key distribution message")]
+    MissingGroupId,
 }
 
 pub fn extract_identity_from_pkmsg(ciphertext: &[u8]) -> Option<Vec<u8>> {
@@ -79,6 +91,14 @@ pub fn jid_to_signal_protocol_address(jid: &str) -> Result<ProtocolAddress, Sign
         name: signal_user,
         device_id: final_device,
     })
+}
+
+pub fn jid_to_signal_sender_key_name(
+    group: &str,
+    user: &str,
+) -> Result<SenderKeyName, SignalError> {
+    let addr = jid_to_signal_protocol_address(user)?;
+    Ok(SenderKeyName::new(group, addr))
 }
 
 pub struct LibSignalRepository {
@@ -156,6 +176,31 @@ impl LibSignalRepository {
         entries.insert(wire_jid, Some(serde_json::to_value(session)?));
         let mut batch = HashMap::new();
         batch.insert("session".to_string(), entries);
+        self.auth.set_keys(batch).await?;
+        Ok(())
+    }
+
+    async fn load_sender_key(&self, sender_name: &SenderKeyName) -> SenderKeyRecord {
+        let key_id = sender_name.to_string();
+        let stored = self.auth.get_keys("sender-key", &[key_id.clone()]).await;
+        if let Some(Some(val)) = stored.get(&key_id) {
+            if let Ok(record) = serde_json::from_value::<SenderKeyRecord>(val.clone()) {
+                return record;
+            }
+        }
+        SenderKeyRecord::new()
+    }
+
+    async fn store_sender_key(
+        &self,
+        sender_name: &SenderKeyName,
+        record: &SenderKeyRecord,
+    ) -> Result<(), SignalError> {
+        let key_id = sender_name.to_string();
+        let mut entries = HashMap::new();
+        entries.insert(key_id, Some(serde_json::to_value(record)?));
+        let mut batch = HashMap::new();
+        batch.insert("sender-key".to_string(), entries);
         self.auth.set_keys(batch).await?;
         Ok(())
     }
@@ -330,6 +375,84 @@ impl LibSignalRepository {
         let plaintext = record.decrypt_whisper_message(ciphertext)?;
         self.store_session(&addr, &record).await?;
         Ok(plaintext)
+    }
+
+    pub async fn encrypt_group_message(
+        &self,
+        group: &str,
+        me_id: &str,
+        data: &[u8],
+    ) -> Result<EncryptedGroupMessage, SignalError> {
+        let lock = self.acquire_tx_lock(group).await;
+        let _guard = lock.lock().await;
+
+        let sender_name = jid_to_signal_sender_key_name(group, me_id)?;
+        let mut record = self.load_sender_key(&sender_name).await;
+        let skdm = GroupSessionBuilder::create(&mut record)?;
+        let ciphertext = GroupCipher::encrypt(&mut record, data)?;
+        self.store_sender_key(&sender_name, &record).await?;
+
+        Ok(EncryptedGroupMessage {
+            ciphertext,
+            sender_key_distribution_message: skdm.serialize().to_vec(),
+        })
+    }
+
+    pub async fn decrypt_group_message(
+        &self,
+        group: &str,
+        author_jid: &str,
+        msg: &[u8],
+    ) -> Result<Vec<u8>, SignalError> {
+        let lock = self.acquire_tx_lock(group).await;
+        let _guard = lock.lock().await;
+
+        let sender_name = jid_to_signal_sender_key_name(group, author_jid)?;
+        let mut record = self.load_sender_key(&sender_name).await;
+        let plaintext = GroupCipher::decrypt(&mut record, msg)?;
+        self.store_sender_key(&sender_name, &record).await?;
+        Ok(plaintext)
+    }
+
+    pub async fn process_sender_key_distribution_message(
+        &self,
+        group_id: &str,
+        author_jid: &str,
+        axolotl_skdm: &[u8],
+    ) -> Result<(), SignalError> {
+        if group_id.is_empty() {
+            return Err(SignalError::MissingGroupId);
+        }
+        let lock = self.acquire_tx_lock(group_id).await;
+        let _guard = lock.lock().await;
+
+        let sender_name = jid_to_signal_sender_key_name(group_id, author_jid)?;
+        let sender_msg = SenderKeyDistributionMessage::from_serialized(axolotl_skdm)?;
+        let mut record = self.load_sender_key(&sender_name).await;
+        GroupSessionBuilder::process(&mut record, &sender_msg);
+        self.store_sender_key(&sender_name, &record).await?;
+        Ok(())
+    }
+
+    pub async fn get_sender_key_distribution_message(
+        &self,
+        group: &str,
+        me_id: &str,
+    ) -> Result<Vec<u8>, SignalError> {
+        let lock = self.acquire_tx_lock(group).await;
+        let _guard = lock.lock().await;
+
+        let sender_name = jid_to_signal_sender_key_name(group, me_id)?;
+        let mut record = self.load_sender_key(&sender_name).await;
+        let skdm = GroupSessionBuilder::create(&mut record)?;
+        self.store_sender_key(&sender_name, &record).await?;
+        Ok(skdm.serialize().to_vec())
+    }
+
+    pub async fn has_sender_key(&self, group: &str, me_id: &str) -> Result<bool, SignalError> {
+        let sender_name = jid_to_signal_sender_key_name(group, me_id)?.to_string();
+        let stored = self.auth.get_keys("sender-key", &[sender_name.clone()]).await;
+        Ok(stored.get(&sender_name).and_then(|v| v.as_ref()).is_some())
     }
 
     pub async fn get_session_info(&self, jid: &str) -> Option<SessionInfo> {
@@ -615,6 +738,69 @@ mod tests {
             .unwrap();
         assert_eq!(dec4, b"msg 2");
         assert_eq!(dec3, b"msg 1");
+
+        let _ = tokio::fs::remove_dir_all(&dir_a).await;
+        let _ = tokio::fs::remove_dir_all(&dir_b).await;
+    }
+
+    #[tokio::test]
+    async fn test_group_sender_key_roundtrip() {
+        let suffix: u64 = rand::thread_rng().gen();
+        let dir_a = std::env::temp_dir().join(format!("baileys_rs_grp_a_{}", suffix));
+        let dir_b = std::env::temp_dir().join(format!("baileys_rs_grp_b_{}", suffix));
+
+        let auth_a = Arc::new(use_multi_file_auth_state(&dir_a).await.unwrap());
+        let auth_b = Arc::new(use_multi_file_auth_state(&dir_b).await.unwrap());
+
+        let repo_a = LibSignalRepository::new(Arc::clone(&auth_a), None);
+        let repo_b = LibSignalRepository::new(Arc::clone(&auth_b), None);
+
+        let group_jid = "120363000123456@g.us";
+        let alice_jid = "573001111111@s.whatsapp.net";
+
+        assert!(!repo_a.has_sender_key(group_jid, alice_jid).await.unwrap());
+
+        let enc1 = repo_a
+            .encrypt_group_message(group_jid, alice_jid, b"primer mensaje grupal")
+            .await
+            .unwrap();
+        assert!(repo_a.has_sender_key(group_jid, alice_jid).await.unwrap());
+
+        repo_b
+            .process_sender_key_distribution_message(
+                group_jid,
+                alice_jid,
+                &enc1.sender_key_distribution_message,
+            )
+            .await
+            .unwrap();
+
+        let dec1 = repo_b
+            .decrypt_group_message(group_jid, alice_jid, &enc1.ciphertext)
+            .await
+            .unwrap();
+        assert_eq!(dec1, b"primer mensaje grupal");
+
+        let enc2 = repo_a
+            .encrypt_group_message(group_jid, alice_jid, b"segundo mensaje grupal")
+            .await
+            .unwrap();
+        let enc3 = repo_a
+            .encrypt_group_message(group_jid, alice_jid, b"tercer mensaje grupal")
+            .await
+            .unwrap();
+
+        let dec3 = repo_b
+            .decrypt_group_message(group_jid, alice_jid, &enc3.ciphertext)
+            .await
+            .unwrap();
+        let dec2 = repo_b
+            .decrypt_group_message(group_jid, alice_jid, &enc2.ciphertext)
+            .await
+            .unwrap();
+
+        assert_eq!(dec3, b"tercer mensaje grupal");
+        assert_eq!(dec2, b"segundo mensaje grupal");
 
         let _ = tokio::fs::remove_dir_all(&dir_a).await;
         let _ = tokio::fs::remove_dir_all(&dir_b).await;
