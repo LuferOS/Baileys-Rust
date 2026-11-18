@@ -11,3 +11,5 @@ pub mod types;
 pub mod utils;
 #[path = "WABinary/mod.rs"]
 pub mod wa_binary;
+#[path = "WAUSync/mod.rs"]
+pub mod wa_usync;
