@@ -3,6 +3,7 @@ use crate::utils::crypto::{signed_key_pair, CryptoError, Curve};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyPair {
@@ -17,10 +18,16 @@ pub struct SignedKeyPair {
     pub key_id: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ProtocolAddress {
     pub name: String,
     pub device_id: u32,
+}
+
+impl fmt::Display for ProtocolAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}", self.name, self.device_id)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

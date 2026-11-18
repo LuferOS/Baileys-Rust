@@ -1,6 +1,8 @@
 #[path = "Defaults/mod.rs"]
 pub mod defaults;
 pub mod proto;
+#[path = "Signal/mod.rs"]
+pub mod signal;
 #[path = "Socket/mod.rs"]
 pub mod socket;
 #[path = "Types/mod.rs"]
