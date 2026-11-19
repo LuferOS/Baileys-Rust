@@ -91,6 +91,17 @@ pub fn unix_timestamp_seconds() -> u64 {
         .unwrap_or(0)
 }
 
+pub fn generate_message_id() -> String {
+    let mut rand_buf = [0u8; 18];
+    OsRng.fill_bytes(&mut rand_buf);
+    let mut hex = String::with_capacity(40);
+    hex.push_str("3EB0");
+    for &b in &rand_buf {
+        hex.push_str(&format!("{:02X}", b));
+    }
+    hex
+}
+
 pub fn generate_message_id_v2(user_id: Option<&str>) -> String {
     let mut data = Vec::with_capacity(64);
     data.extend_from_slice(&unix_timestamp_seconds().to_be_bytes());
@@ -186,7 +197,11 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_message_id_v2_and_phash() {
+    fn test_generate_message_ids_and_phash() {
+        let id_v1 = generate_message_id();
+        assert_eq!(id_v1.len(), 40);
+        assert!(id_v1.starts_with("3EB0"));
+
         let id = generate_message_id_v2(Some("573001234567@s.whatsapp.net"));
         assert_eq!(id.len(), 22);
         assert!(id.starts_with("3EB0"));
