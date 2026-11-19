@@ -1316,6 +1316,8 @@ impl MessagesSocket {
             .as_ref()
             .ok_or(MessageGenerationError::NoContent)?;
 
+        additional_nodes.extend(crate::utils::extract_experimental_nodes(proto_msg));
+
         self.relay_message(
             jid,
             proto_msg,
@@ -1329,6 +1331,58 @@ impl MessagesSocket {
         .await?;
 
         Ok(full_msg)
+    }
+
+    pub async fn send_interactive(
+        &self,
+        jid: &str,
+        input: &crate::utils::InteractiveInput,
+        options: MessageGenerationOptions,
+    ) -> Result<WaMessage, MessagesSendError> {
+        let msg = crate::utils::build_interactive_message(input);
+        self.send_message(jid, AnyMessageContent::Raw(msg), options)
+            .await
+    }
+
+    pub async fn send_webview(
+        &self,
+        jid: &str,
+        title: impl Into<String>,
+        body: impl Into<String>,
+        footer: Option<String>,
+        button_label: impl Into<String>,
+        url: impl Into<String>,
+        in_app: bool,
+        options: MessageGenerationOptions,
+    ) -> Result<WaMessage, MessagesSendError> {
+        let msg = crate::utils::build_webview_message(title, body, footer, button_label, url, in_app);
+        self.send_message(jid, AnyMessageContent::Raw(msg), options)
+            .await
+    }
+
+    pub async fn send_carousel(
+        &self,
+        jid: &str,
+        body: Option<String>,
+        footer: Option<String>,
+        cards: Vec<crate::utils::InteractiveInput>,
+        wrap_view_once: bool,
+        options: MessageGenerationOptions,
+    ) -> Result<WaMessage, MessagesSendError> {
+        let msg = crate::utils::build_carousel_message(body, footer, cards, wrap_view_once);
+        self.send_message(jid, AnyMessageContent::Raw(msg), options)
+            .await
+    }
+
+    pub async fn send_rich_response(
+        &self,
+        jid: &str,
+        input: &crate::utils::RichResponseInput,
+        options: MessageGenerationOptions,
+    ) -> Result<WaMessage, MessagesSendError> {
+        let msg = crate::utils::build_rich_response_message(input);
+        self.send_message(jid, AnyMessageContent::Raw(msg), options)
+            .await
     }
 }
 

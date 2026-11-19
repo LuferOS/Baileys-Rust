@@ -5,10 +5,10 @@ use crate::proto::message::interactive_message::{
     self, native_flow_message::NativeFlowButton, Body, CarouselMessage, Footer, Header,
     NativeFlowMessage,
 };
-use crate::proto::message::{FutureProofMessage, InteractiveMessage, MessageContextInfo};
+use crate::proto::message::{FutureProofMessage, InteractiveMessage};
 use crate::proto::{
     AiRichResponseCodeMetadata, AiRichResponseLatexMetadata, AiRichResponseMessage,
-    AiRichResponseSubMessage, AiRichResponseTableMetadata, Message,
+    AiRichResponseSubMessage, AiRichResponseTableMetadata, Message, MessageContextInfo,
 };
 use crate::wa_binary::{BinaryNode, BinaryNodeAttributes, BinaryNodeData};
 use rand::RngCore;
@@ -238,12 +238,12 @@ pub fn wrap_view_once_message(inner: Message) -> Message {
 
 pub fn build_interactive_proto(input: &InteractiveInput) -> InteractiveMessage {
     let header = if input.title.is_some() || input.subtitle.is_some() {
-        Some(Header {
+        Some(Box::new(Header {
             title: input.title.clone(),
             subtitle: input.subtitle.clone(),
             has_media_attachment: Some(false),
             media: None,
-        })
+        }))
     } else {
         None
     };
@@ -252,11 +252,11 @@ pub fn build_interactive_proto(input: &InteractiveInput) -> InteractiveMessage {
         text: Some(t.clone()),
     });
 
-    let footer = input.footer.as_ref().map(|t| Footer {
+    let footer = input.footer.as_ref().map(|t| Box::new(Footer {
         text: Some(t.clone()),
         has_media_attachment: Some(false),
         media: None,
-    });
+    }));
 
     let buttons = input.buttons.iter().map(NativeButtonInput::to_proto).collect();
 
@@ -323,11 +323,11 @@ pub fn build_carousel_message(
         cards.iter().map(build_interactive_proto).collect();
     let interactive = InteractiveMessage {
         body: body.map(|t| Body { text: Some(t) }),
-        footer: footer.map(|t| Footer {
+        footer: footer.map(|t| Box::new(Footer {
             text: Some(t),
             has_media_attachment: Some(false),
             media: None,
-        }),
+        })),
         interactive_message: Some(interactive_message::InteractiveMessage::CarouselMessage(
             CarouselMessage {
                 cards: card_protos,
