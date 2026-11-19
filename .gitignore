@@ -2,3 +2,6 @@
 auth_info/
 auth_info_bot/
 *.bak
+auth_info*
+wa_version.json
+*.enc
