@@ -1,6 +1,6 @@
 use crate::proto::sync_action_value::{
     ContactAction, PrivacySettingDisableLinkPreviewsAction, PrivacySettingRelayAllCalls,
-    StatusPrivacy, SyncActionMessage, SyncActionMessageRange, TimeFormatAction,
+    StatusPrivacyAction, SyncActionMessage, SyncActionMessageRange, TimeFormatAction,
 };
 use crate::proto::{SyncActionData, SyncActionValue};
 use crate::types::{LidMapping, WaMessageKey, WaPatchName};
@@ -196,7 +196,7 @@ pub enum SyncActionEvent {
     SettingLocale(String),
     SettingTimeFormat(TimeFormatAction),
     SettingRelayAllCalls(PrivacySettingRelayAllCalls),
-    SettingStatusPrivacy(StatusPrivacy),
+    SettingStatusPrivacy(StatusPrivacyAction),
     SettingDisableLinkPreviews(PrivacySettingDisableLinkPreviewsAction),
     SettingNotificationActivity(i32),
     SettingChannelsPersonalisedRecommendation(bool),

@@ -1,7 +1,7 @@
 use crate::defaults::MediaType;
 use crate::proto::message::AppStateSyncKeyData;
 use crate::proto::sync_action_value::{
-    ArchiveChatAction, ClearChatAction, ContactAction, DeleteChatAction, DeleteMessageForMeAction,
+    ArchiveChatAction, ClearChatAction, DeleteChatAction, DeleteMessageForMeAction,
     LabelAssociationAction, LabelEditAction, MarkChatAsReadAction, MuteAction, PinAction,
     PrivacySettingDisableLinkPreviewsAction, PushNameSetting, QuickReplyAction, StarAction,
     SyncActionMessageRange,
