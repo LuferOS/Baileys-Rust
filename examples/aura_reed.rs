@@ -1,4 +1,5 @@
 mod cmd;
+mod debug;
 mod handler;
 
 use baileys_rs::signal::LibSignalRepository;
@@ -10,6 +11,7 @@ use baileys_rs::utils::{
     fetch_latest_wa_web_version, get_next_pre_keys_node, unix_timestamp_seconds,
     use_multi_file_auth_state, Browsers,
 };
+use debug::DebugState;
 use qrcode::render::unicode;
 use qrcode::QrCode;
 use serde::{Deserialize, Serialize};
@@ -17,6 +19,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::{Mutex, Semaphore};
 
 pub const BOT_NAME: &str = "Aura-Reed Rust";
 
@@ -31,6 +35,7 @@ pub struct AuraConfig {
     pub pair_phone: Option<String>,
     pub prefixes: Vec<String>,
     pub worker_threads: usize,
+    pub debug_enabled: bool,
 }
 
 pub struct BotContext {
@@ -39,6 +44,9 @@ pub struct BotContext {
     pub processed_msgs: Arc<AtomicU64>,
     pub prefixes: Vec<String>,
     pub worker_threads: usize,
+    pub debug: Arc<DebugState>,
+    pub cmd_semaphore: Arc<Semaphore>,
+    pub creds_lock: Arc<Mutex<()>>,
 }
 
 fn detected_cores() -> usize {
@@ -57,6 +65,9 @@ fn parse_aura_config() -> AuraConfig {
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|&n| n >= 1)
         .unwrap_or_else(detected_cores);
+    let mut debug_enabled = std::env::var("AURA_DEBUG")
+        .ok()
+        .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"));
 
     if let Ok(env_prefix) = std::env::var("AURA_PREFIX") {
         let parsed: Vec<String> = env_prefix
@@ -89,6 +100,10 @@ fn parse_aura_config() -> AuraConfig {
                 }
                 i += 2;
             }
+            "--debug" => {
+                debug_enabled = true;
+                i += 1;
+            }
             _ => {
                 i += 1;
             }
@@ -100,6 +115,7 @@ fn parse_aura_config() -> AuraConfig {
         pair_phone: pair_phone.map(|p| p.chars().filter(|c| c.is_ascii_digit()).collect()),
         prefixes,
         worker_threads,
+        debug_enabled,
     }
 }
 
@@ -141,18 +157,24 @@ fn render_qr_terminal(qr_data: &str) {
     }
 }
 
-async fn save_creds_to_disk(
+async fn save_creds_atomic(
     auth_dir: &Path,
     creds: &AuthenticationCreds,
+    lock: &Mutex<()>,
 ) -> Result<(), std::io::Error> {
+    let _guard = lock.lock().await;
     tokio::fs::create_dir_all(auth_dir).await?;
     let bytes = serde_json::to_vec_pretty(creds)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    tokio::fs::write(auth_dir.join("creds.json"), bytes).await
+    let tmp_path = auth_dir.join("creds.json.tmp");
+    let final_path = auth_dir.join("creds.json");
+    tokio::fs::write(&tmp_path, bytes).await?;
+    tokio::fs::rename(&tmp_path, &final_path).await
 }
 
 async fn activate_session(
     messages: &Arc<MessagesSocket>,
+    ctx: &Arc<BotContext>,
     activated: &AtomicBool,
     auth_dir: &Path,
     connect_started: Instant,
@@ -174,16 +196,27 @@ async fn activate_session(
             {
                 creds_now.first_unuploaded_pre_key_id = prekeys_node.update.first_unuploaded_pre_key_id;
                 creds_now.next_pre_key_id = prekeys_node.update.next_pre_key_id;
-                let _ = save_creds_to_disk(auth_dir, &creds_now).await;
+                let _ = save_creds_atomic(auth_dir, &creds_now, &ctx.creds_lock).await;
             }
         }
     }
 
-    let _ = messages.socket.send_passive_iq(true).await;
-    let _ = messages
-        .socket
-        .send_presence_update(WaPresence::Available, None)
-        .await;
+    let _ = tokio::join!(
+        messages.socket.send_passive_iq(true),
+        messages.socket.send_presence_update(WaPresence::Available, None)
+    );
+
+    let warm_msg = Arc::clone(messages);
+    let warm_dbg = Arc::clone(&ctx.debug);
+    tokio::spawn(async move {
+        let t = Instant::now();
+        if warm_msg.refresh_media_conn(false).await.is_ok() {
+            warm_dbg.log(
+                "warmup",
+                format!("media_conn pre-cargado en {:.0} ms", t.elapsed().as_secs_f64() * 1000.0),
+            );
+        }
+    });
 
     println!(
         "[{}] listo como {:?} en {:.0} ms",
@@ -201,17 +234,23 @@ pub async fn run_aura(cfg: AuraConfig) -> Result<(), Box<dyn std::error::Error>>
         processed_msgs: Arc::new(AtomicU64::new(0)),
         prefixes: cfg.prefixes.clone(),
         worker_threads: cfg.worker_threads,
+        debug: Arc::new(DebugState::new(cfg.debug_enabled)),
+        cmd_semaphore: Arc::new(Semaphore::new(64)),
+        creds_lock: Arc::new(Mutex::new(())),
     });
 
     println!(
-        "{} v{} | WA Web {}.{}.{} | workers={}",
+        "{} v{} | WA Web {}.{}.{} | workers={} | debug={}",
         BOT_NAME,
         env!("CARGO_PKG_VERSION"),
         wa_version[0],
         wa_version[1],
         wa_version[2],
-        cfg.worker_threads
+        cfg.worker_threads,
+        if cfg.debug_enabled { "ON" } else { "OFF" }
     );
+
+    let mut backoff_ms: u64 = 250;
 
     loop {
         let connect_started = Instant::now();
@@ -225,7 +264,18 @@ pub async fn run_aura(cfg: AuraConfig) -> Result<(), Box<dyn std::error::Error>>
         config.connect_timeout_ms = 8_000;
         config.default_query_timeout_ms = 8_000;
 
-        let socket = WaSocket::connect(config, auth.creds.clone()).await?;
+        let socket = match WaSocket::connect(config, auth.creds.clone()).await {
+            Ok(s) => s,
+            Err(err) => {
+                ctx.debug
+                    .record_error("connect", format!("{}", err))
+                    .await;
+                tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                backoff_ms = (backoff_ms * 2).min(5_000);
+                continue;
+            }
+        };
+
         let signal_repo = Arc::new(LibSignalRepository::new(Arc::clone(&auth), None));
         let messages = Arc::new(MessagesSocket::new(
             socket,
@@ -240,17 +290,18 @@ pub async fn run_aura(cfg: AuraConfig) -> Result<(), Box<dyn std::error::Error>>
 
         if registered {
             let msg_ref = Arc::clone(&messages);
+            let ctx_ref = Arc::clone(&ctx);
             let act_ref = Arc::clone(&activated);
             let dir_ref = cfg.auth_dir.clone();
             tokio::spawn(async move {
                 for _ in 0..40 {
                     if msg_ref.socket.is_open() {
-                        activate_session(&msg_ref, &act_ref, &dir_ref, connect_started).await;
+                        activate_session(&msg_ref, &ctx_ref, &act_ref, &dir_ref, connect_started).await;
                         return;
                     }
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
-                activate_session(&msg_ref, &act_ref, &dir_ref, connect_started).await;
+                activate_session(&msg_ref, &ctx_ref, &act_ref, &dir_ref, connect_started).await;
             });
         } else if let Some(ref phone) = cfg.pair_phone {
             if !phone.is_empty() {
@@ -273,25 +324,55 @@ pub async fn run_aura(cfg: AuraConfig) -> Result<(), Box<dyn std::error::Error>>
         let msg_sock = Arc::clone(&messages);
         let ctx_ref = Arc::clone(&ctx);
         let recv_task = tokio::spawn(async move {
-            while let Ok(event) = recv_rx.recv().await {
-                if let RecvEvent::MessageUpsert {
-                    message,
-                    is_offline,
-                } = event
-                {
-                    ctx_ref.processed_msgs.fetch_add(1, Ordering::Relaxed);
-                    if is_offline {
-                        continue;
+            loop {
+                match recv_rx.recv().await {
+                    Ok(RecvEvent::MessageUpsert {
+                        message,
+                        is_offline,
+                    }) => {
+                        ctx_ref.processed_msgs.fetch_add(1, Ordering::Relaxed);
+                        if is_offline {
+                            continue;
+                        }
+                        let Some(ref proto_msg) = message.message else {
+                            continue;
+                        };
+                        let Some(text) = handler::extract_message_text(proto_msg) else {
+                            continue;
+                        };
+                        if let Some((cmd_name, args)) = handler::parse_command(&text, &ctx_ref.prefixes) {
+                            let sock_clone = Arc::clone(&msg_sock);
+                            let ctx_clone = Arc::clone(&ctx_ref);
+                            tokio::spawn(async move {
+                                let Ok(_permit) = ctx_clone.cmd_semaphore.clone().acquire_owned().await else {
+                                    return;
+                                };
+                                ctx_clone.debug.active_tasks.fetch_add(1, Ordering::Relaxed);
+                                ctx_clone.debug.total_commands.fetch_add(1, Ordering::Relaxed);
+                                let timed = tokio::time::timeout(
+                                    Duration::from_secs(25),
+                                    handler::dispatch(&sock_clone, &ctx_clone, message, &cmd_name, &args),
+                                )
+                                .await;
+                                if timed.is_err() {
+                                    ctx_clone
+                                        .debug
+                                        .record_error("timeout", format!(".{} excedio 25s", cmd_name))
+                                        .await;
+                                }
+                                ctx_clone.debug.active_tasks.fetch_sub(1, Ordering::Relaxed);
+                            });
+                        }
                     }
-                    let Some(ref proto_msg) = message.message else {
-                        continue;
-                    };
-                    let Some(text) = handler::extract_message_text(proto_msg) else {
-                        continue;
-                    };
-                    if let Some((cmd_name, args)) = handler::parse_command(&text, &ctx_ref.prefixes) {
-                        handler::dispatch(&msg_sock, &ctx_ref, message, &cmd_name, &args).await;
+                    Ok(_) => {}
+                    Err(RecvError::Lagged(skipped)) => {
+                        ctx_ref.debug.recv_lagged.fetch_add(skipped, Ordering::Relaxed);
+                        ctx_ref
+                            .debug
+                            .record_error("recv_rx", format!("lagged {} eventos", skipped))
+                            .await;
                     }
+                    Err(RecvError::Closed) => break,
                 }
             }
         });
@@ -299,44 +380,70 @@ pub async fn run_aura(cfg: AuraConfig) -> Result<(), Box<dyn std::error::Error>>
         let mut reconnect = false;
         let pairing_mode = cfg.pair_phone.as_ref().is_some_and(|p| !p.is_empty());
 
-        while let Ok(ev) = socket_rx.recv().await {
-            match ev {
-                SocketEvent::ConnectionUpdate(upd) => {
+        loop {
+            match socket_rx.recv().await {
+                Ok(SocketEvent::ConnectionUpdate(upd)) => {
                     if let Some(qr) = upd.qr {
                         if !pairing_mode {
                             render_qr_terminal(&qr);
                         }
                     }
                     if let Some(ConnectionState::Open) = upd.connection {
+                        backoff_ms = 250;
                         let msg_ref = Arc::clone(&messages);
+                        let ctx_ref = Arc::clone(&ctx);
                         let act_ref = Arc::clone(&activated);
                         let dir_ref = cfg.auth_dir.clone();
                         tokio::spawn(async move {
-                            activate_session(&msg_ref, &act_ref, &dir_ref, connect_started).await;
+                            activate_session(&msg_ref, &ctx_ref, &act_ref, &dir_ref, connect_started).await;
                         });
                     }
                     if let Some(ConnectionState::Close) = upd.connection {
                         let code = upd.last_disconnect.as_ref().and_then(|d| d.status_code);
+                        ctx.debug
+                            .record_error("disconnect", format!("codigo={:?}", code))
+                            .await;
                         reconnect = code != Some(DisconnectReason::LoggedOut as u16);
                         break;
                     }
                 }
-                SocketEvent::CredsUpdate(creds) => {
-                    let _ = save_creds_to_disk(&cfg.auth_dir, &creds).await;
+                Ok(SocketEvent::CredsUpdate(creds)) => {
+                    let dir = cfg.auth_dir.clone();
+                    let lock = Arc::clone(&ctx.creds_lock);
+                    let dbg = Arc::clone(&ctx.debug);
+                    tokio::spawn(async move {
+                        if let Err(err) = save_creds_atomic(&dir, &creds, &lock).await {
+                            dbg.record_error("creds_save", format!("{}", err)).await;
+                        }
+                    });
                 }
-                SocketEvent::Node(node) => {
+                Ok(SocketEvent::Node(node)) => {
                     if registered && !activated.load(Ordering::SeqCst) {
                         let msg_ref = Arc::clone(&messages);
+                        let ctx_ref = Arc::clone(&ctx);
                         let act_ref = Arc::clone(&activated);
                         let dir_ref = cfg.auth_dir.clone();
                         tokio::spawn(async move {
-                            activate_session(&msg_ref, &act_ref, &dir_ref, connect_started).await;
+                            activate_session(&msg_ref, &ctx_ref, &act_ref, &dir_ref, connect_started).await;
                         });
                     }
                     let r = Arc::clone(&recv);
+                    let dbg = Arc::clone(&ctx.debug);
                     tokio::spawn(async move {
-                        let _ = r.process_node(&node).await;
+                        if let Err(err) = r.process_node(&node).await {
+                            dbg.log("node_err", format!("{}", err));
+                        }
                     });
+                }
+                Err(RecvError::Lagged(skipped)) => {
+                    ctx.debug.socket_lagged.fetch_add(skipped, Ordering::Relaxed);
+                    ctx.debug
+                        .record_error("socket_rx", format!("lagged {} eventos", skipped))
+                        .await;
+                }
+                Err(RecvError::Closed) => {
+                    reconnect = true;
+                    break;
                 }
             }
         }
@@ -345,7 +452,8 @@ pub async fn run_aura(cfg: AuraConfig) -> Result<(), Box<dyn std::error::Error>>
         if !reconnect {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+        backoff_ms = (backoff_ms * 2).min(5_000);
     }
 
     Ok(())
@@ -355,6 +463,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = parse_aura_config();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(cfg.worker_threads)
+        .max_blocking_threads(64)
         .thread_stack_size(2 * 1024 * 1024)
         .enable_all()
         .build()?;

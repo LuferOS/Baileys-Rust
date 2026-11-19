@@ -9,6 +9,7 @@ pub mod messages_send;
 pub mod mex;
 pub mod newsletter;
 pub mod socket;
+pub mod subbots;
 pub mod usync;
 
 pub use business::*;
@@ -21,4 +22,5 @@ pub use messages_send::*;
 pub use mex::*;
 pub use newsletter::*;
 pub use socket::*;
+pub use subbots::*;
 pub use usync::*;

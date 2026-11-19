@@ -1,13 +1,19 @@
 use crate::types::{init_auth_creds, AuthenticationCreds};
 use crate::utils::crypto::CryptoError;
+use futures_util::future::join_all;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::fs;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
+
+const MAX_KEY_CACHE_ENTRIES: usize = 1024;
+const FILE_LOCK_SHARDS: usize = 64;
 
 #[derive(Debug, Error)]
 pub enum AuthStateError {
@@ -21,14 +27,53 @@ pub enum AuthStateError {
     NotADirectory(String),
 }
 
+struct KeyCache {
+    entries: HashMap<String, Option<Value>>,
+    order: VecDeque<String>,
+}
+
+impl KeyCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::with_capacity(256),
+            order: VecDeque::with_capacity(256),
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<&Option<Value>> {
+        self.entries.get(key)
+    }
+
+    fn insert(&mut self, key: String, value: Option<Value>) {
+        if !self.entries.contains_key(&key) {
+            while self.entries.len() >= MAX_KEY_CACHE_ENTRIES {
+                if let Some(oldest) = self.order.pop_front() {
+                    self.entries.remove(&oldest);
+                } else {
+                    break;
+                }
+            }
+            self.order.push_back(key.clone());
+        }
+        self.entries.insert(key, value);
+    }
+}
+
 pub struct MultiFileAuthState {
     folder: PathBuf,
     pub creds: AuthenticationCreds,
-    file_locks: Arc<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>>,
+    shards: Arc<Vec<Mutex<()>>>,
+    cache: Arc<RwLock<KeyCache>>,
 }
 
 fn fix_file_name(file: &str) -> String {
     file.replace('/', "__").replace(':', "-")
+}
+
+fn shard_index(key: &str) -> usize {
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    (hasher.finish() as usize) % FILE_LOCK_SHARDS
 }
 
 impl MultiFileAuthState {
@@ -48,11 +93,16 @@ impl MultiFileAuthState {
             }
         }
 
-        let file_locks = Arc::new(Mutex::new(HashMap::new()));
+        let mut shards = Vec::with_capacity(FILE_LOCK_SHARDS);
+        for _ in 0..FILE_LOCK_SHARDS {
+            shards.push(Mutex::new(()));
+        }
+
         let mut state = Self {
             folder,
             creds: init_auth_creds()?,
-            file_locks,
+            shards: Arc::new(shards),
+            cache: Arc::new(RwLock::new(KeyCache::new())),
         };
 
         if let Some(loaded) = state.read_data::<AuthenticationCreds>("creds.json").await {
@@ -62,35 +112,29 @@ impl MultiFileAuthState {
         Ok(state)
     }
 
-    async fn get_file_lock(&self, path: &Path) -> Arc<Mutex<()>> {
-        let mut locks = self.file_locks.lock().await;
-        locks
-            .entry(path.to_path_buf())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
-    }
-
     async fn write_data<T: Serialize>(&self, data: &T, file: &str) -> Result<(), AuthStateError> {
-        let file_path = self.folder.join(fix_file_name(file));
-        let mutex = self.get_file_lock(&file_path).await;
-        let _guard = mutex.lock().await;
-        let serialized = serde_json::to_string(data)?;
-        fs::write(&file_path, serialized).await?;
+        let fixed = fix_file_name(file);
+        let file_path = self.folder.join(&fixed);
+        let tmp_path = self.folder.join(format!("{}.tmp", fixed));
+        let serialized = serde_json::to_vec(data)?;
+        let _guard = self.shards[shard_index(&fixed)].lock().await;
+        fs::write(&tmp_path, serialized).await?;
+        fs::rename(&tmp_path, &file_path).await?;
         Ok(())
     }
 
     async fn read_data<T: DeserializeOwned>(&self, file: &str) -> Option<T> {
-        let file_path = self.folder.join(fix_file_name(file));
-        let mutex = self.get_file_lock(&file_path).await;
-        let _guard = mutex.lock().await;
-        let raw = fs::read_to_string(&file_path).await.ok()?;
-        serde_json::from_str(&raw).ok()
+        let fixed = fix_file_name(file);
+        let file_path = self.folder.join(&fixed);
+        let _guard = self.shards[shard_index(&fixed)].lock().await;
+        let raw = fs::read(&file_path).await.ok()?;
+        serde_json::from_slice(&raw).ok()
     }
 
     async fn remove_data(&self, file: &str) {
-        let file_path = self.folder.join(fix_file_name(file));
-        let mutex = self.get_file_lock(&file_path).await;
-        let _guard = mutex.lock().await;
+        let fixed = fix_file_name(file);
+        let file_path = self.folder.join(&fixed);
+        let _guard = self.shards[shard_index(&fixed)].lock().await;
         let _ = fs::remove_file(&file_path).await;
     }
 
@@ -98,13 +142,42 @@ impl MultiFileAuthState {
         self.write_data(&self.creds, "creds.json").await
     }
 
+    pub async fn write_creds(&self, creds: &AuthenticationCreds) -> Result<(), AuthStateError> {
+        self.write_data(creds, "creds.json").await
+    }
+
     pub async fn get_keys(&self, key_type: &str, ids: &[String]) -> HashMap<String, Option<Value>> {
         let mut result = HashMap::with_capacity(ids.len());
-        for id in ids {
-            let file = format!("{}-{}.json", key_type, id);
-            let value = self.read_data::<Value>(&file).await;
-            result.insert(id.clone(), value);
+        let mut misses: Vec<(String, String)> = Vec::new();
+
+        {
+            let guard = self.cache.read().await;
+            for id in ids {
+                let file = format!("{}-{}.json", key_type, id);
+                if let Some(cached) = guard.get(&file) {
+                    result.insert(id.clone(), cached.clone());
+                } else {
+                    misses.push((id.clone(), file));
+                }
+            }
         }
+
+        if misses.is_empty() {
+            return result;
+        }
+
+        let fetches = misses.into_iter().map(|(id, file)| async move {
+            let value = self.read_data::<Value>(&file).await;
+            (id, file, value)
+        });
+        let loaded = join_all(fetches).await;
+
+        let mut guard = self.cache.write().await;
+        for (id, file, value) in loaded {
+            guard.insert(file, value.clone());
+            result.insert(id, value);
+        }
+
         result
     }
 
@@ -112,16 +185,40 @@ impl MultiFileAuthState {
         &self,
         data: HashMap<String, HashMap<String, Option<Value>>>,
     ) -> Result<(), AuthStateError> {
-        for (category, entries) in data {
-            for (id, value) in entries {
-                let file = format!("{}-{}.json", category, id);
-                match value {
-                    Some(v) => self.write_data(&v, &file).await?,
-                    None => self.remove_data(&file).await,
+        let mut ops: Vec<(String, Option<Value>)> = Vec::new();
+
+        {
+            let mut guard = self.cache.write().await;
+            for (category, entries) in data {
+                for (id, value) in entries {
+                    let file = format!("{}-{}.json", category, id);
+                    guard.insert(file.clone(), value.clone());
+                    ops.push((file, value));
                 }
             }
         }
+
+        let tasks = ops.into_iter().map(|(file, value)| async move {
+            match value {
+                Some(v) => self.write_data(&v, &file).await,
+                None => {
+                    self.remove_data(&file).await;
+                    Ok(())
+                }
+            }
+        });
+
+        for res in join_all(tasks).await {
+            res?;
+        }
+
         Ok(())
+    }
+
+    pub async fn clear_cache(&self) {
+        let mut guard = self.cache.write().await;
+        guard.entries.clear();
+        guard.order.clear();
     }
 }
 

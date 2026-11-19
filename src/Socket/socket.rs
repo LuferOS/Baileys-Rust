@@ -141,7 +141,7 @@ impl WaSocket {
         noise.finish_init()?;
         let buffered_frames = noise.decode_frame(&[])?;
 
-        let (events_tx, _) = broadcast::channel(256);
+        let (events_tx, _) = broadcast::channel(1024);
         let inner = Arc::new(SocketInner {
             config,
             uq_tag_id: generate_md_tag_prefix(),
@@ -225,6 +225,33 @@ impl WaSocket {
 
     pub fn is_open(&self) -> bool {
         !self.inner.closed.load(Ordering::SeqCst) && self.inner.ws_sender.is_open()
+    }
+
+    pub fn peer_addr(&self) -> Option<std::net::SocketAddr> {
+        self.inner.ws_sender.peer_addr()
+    }
+
+    pub fn local_addr(&self) -> Option<std::net::SocketAddr> {
+        self.inner.ws_sender.local_addr()
+    }
+
+    pub async fn ping_ms(&self, timeout_ms: Option<u64>) -> Result<f64, SocketError> {
+        let start = std::time::Instant::now();
+        let ping_iq = BinaryNode {
+            tag: "iq".to_string(),
+            attrs: BinaryNodeAttributes::from([
+                ("to".to_string(), S_WHATSAPP_NET.to_string()),
+                ("type".to_string(), "get".to_string()),
+                ("xmlns".to_string(), "w:p".to_string()),
+            ]),
+            content: Some(BinaryNodeData::List(vec![BinaryNode {
+                tag: "ping".to_string(),
+                attrs: BinaryNodeAttributes::new(),
+                content: None,
+            }])),
+        };
+        self.query(ping_iq, timeout_ms.or(Some(3_000))).await?;
+        Ok(start.elapsed().as_secs_f64() * 1000.0)
     }
 
     pub async fn creds(&self) -> AuthenticationCreds {

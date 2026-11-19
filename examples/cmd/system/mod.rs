@@ -1,4 +1,3 @@
-use baileys_rs::proto::Message;
 use baileys_rs::socket::MessagesSocket;
 use baileys_rs::types::WaMessage;
 use baileys_rs::utils::{AnyMessageContent, MessageGenerationOptions};
@@ -99,6 +98,7 @@ async fn measure_wa_ping_ms(messages: &Arc<MessagesSocket>) -> Option<f64> {
 
 async fn send_reply(
     messages: &Arc<MessagesSocket>,
+    ctx: &BotContext,
     remote_jid: &str,
     quoted: WaMessage,
     user_jid: Option<String>,
@@ -117,16 +117,14 @@ async fn send_reply(
         background_color: None,
         font: None,
     };
-    let _ = messages
-        .send_message(
-            remote_jid,
-            AnyMessageContent::Raw(Message {
-                conversation: Some(text),
-                ..Default::default()
-            }),
-            opts,
-        )
-        .await;
+    if let Err(err) = messages
+        .send_message(remote_jid, AnyMessageContent::Text(text), opts)
+        .await
+    {
+        ctx.debug
+            .record_error("send_reply", format!("{}: {}", remote_jid, err))
+            .await;
+    }
 }
 
 pub async fn run(
@@ -134,7 +132,7 @@ pub async fn run(
     ctx: &BotContext,
     message: WaMessage,
     cmd: &str,
-    _args: &str,
+    args: &str,
     me_jid: Option<String>,
 ) -> bool {
     let Some(remote_jid) = message.key.remote_jid.clone() else {
@@ -148,6 +146,7 @@ pub async fn run(
             let ping = measure_wa_ping_ms(messages).await;
             let local_ms = t0.elapsed().as_secs_f64() * 1000.0;
             let stats = read_process_stats();
+            let snap = ctx.debug.snapshot().await;
             let ping_str = ping
                 .map(|ms| format!("{:.2} ms (IQ w:p)", ms))
                 .unwrap_or_else(|| "N/A".to_string());
@@ -158,44 +157,51 @@ pub async fn run(
                 .join("\n");
 
             let body = format!(
-                "*{}* (`baileys-rs` v{})\n\
-                Estado: Operativo\n\
-                Cuenta: {}\n\n\
+                "*{bot}* (`baileys-rs` v{ver})\n\
+                Estado: Operativo | Debug: {dbg}\n\
+                Cuenta: {acc}\n\n\
                 *Rendimiento*\n\
-                - Ping WhatsApp: {}\n\
-                - Proceso local: {:.3} ms\n\
-                - Uptime: {}\n\
-                - Mensajes procesados: {}\n\n\
+                - Ping WhatsApp: {ping}\n\
+                - Proceso local: {local:.3} ms\n\
+                - Uptime: {up}\n\
+                - Mensajes: {msgs} | Comandos: {cmds} | Activos: {act}\n\n\
                 *Memoria y Runtime*\n\
-                - RAM actual (VmRSS): {:.2} MB\n\
-                - RAM pico (VmHWM): {:.2} MB\n\
-                - Workers Tokio: {} | Hilos totales: {}\n\
-                - Rust: {}\n\
-                - Sistema: {}/{}\n\
-                - WA Web: {}.{}.{}\n\n\
-                *Modulos activos ({})*\n\
-                {}",
-                BOT_NAME,
-                env!("CARGO_PKG_VERSION"),
-                me_jid.as_deref().unwrap_or("desconocida"),
-                ping_str,
-                local_ms,
-                format_uptime(ctx.started_at.elapsed()),
-                total_msgs,
-                stats.rss_mb,
-                stats.hwm_mb,
-                ctx.worker_threads,
-                stats.threads,
-                env!("BAILEYS_RUSTC_VERSION"),
-                std::env::consts::OS,
-                std::env::consts::ARCH,
-                ctx.wa_version[0],
-                ctx.wa_version[1],
-                ctx.wa_version[2],
-                ACTIVE_MODULES.len(),
-                modules
+                - RAM actual (VmRSS): {rss:.2} MB\n\
+                - RAM pico (VmHWM): {hwm:.2} MB\n\
+                - Workers Tokio: {wrk} | Hilos: {thr}\n\
+                - Lag socket/recv: {slag}/{rlag} | Errores: {errs}\n\
+                - Rust: {rustc}\n\
+                - Sistema: {os}/{arch}\n\
+                - WA Web: {w0}.{w1}.{w2}\n\n\
+                *Modulos activos ({mcnt})*\n\
+                {mods}",
+                bot = BOT_NAME,
+                ver = env!("CARGO_PKG_VERSION"),
+                dbg = if snap.enabled { "ON" } else { "OFF" },
+                acc = me_jid.as_deref().unwrap_or("desconocida"),
+                ping = ping_str,
+                local = local_ms,
+                up = format_uptime(ctx.started_at.elapsed()),
+                msgs = total_msgs,
+                cmds = snap.total_commands,
+                act = snap.active_tasks,
+                rss = stats.rss_mb,
+                hwm = stats.hwm_mb,
+                wrk = ctx.worker_threads,
+                thr = stats.threads,
+                slag = snap.socket_lagged,
+                rlag = snap.recv_lagged,
+                errs = snap.total_errors,
+                rustc = env!("BAILEYS_RUSTC_VERSION"),
+                os = std::env::consts::OS,
+                arch = std::env::consts::ARCH,
+                w0 = ctx.wa_version[0],
+                w1 = ctx.wa_version[1],
+                w2 = ctx.wa_version[2],
+                mcnt = ACTIVE_MODULES.len(),
+                mods = modules
             );
-            send_reply(messages, &remote_jid, message, me_jid, body).await;
+            send_reply(messages, ctx, &remote_jid, message, me_jid, body).await;
             true
         }
         "ping" => {
@@ -205,44 +211,135 @@ pub async fn run(
                 .map(|ms| format!("{:.2} ms", ms))
                 .unwrap_or_else(|| "N/A".to_string());
             let body = format!(
-                "*{} — Pong*\nPing WA: {}\nProceso local: {:.3} ms",
-                BOT_NAME, ping_txt, local_ms
+                "*{bot} — Pong*\nPing WA: {ping}\nProceso local: {local:.3} ms",
+                bot = BOT_NAME,
+                ping = ping_txt,
+                local = local_ms
             );
-            send_reply(messages, &remote_jid, message, me_jid, body).await;
+            send_reply(messages, ctx, &remote_jid, message, me_jid, body).await;
             true
         }
         "ram" => {
             let stats = read_process_stats();
+            let snap = ctx.debug.snapshot().await;
             let body = format!(
-                "*{} — Memoria*\nRSS: {:.2} MB\nPico (HWM): {:.2} MB\nWorkers: {} | Hilos: {}",
-                BOT_NAME, stats.rss_mb, stats.hwm_mb, ctx.worker_threads, stats.threads
+                "*{bot} — Memoria*\nRSS: {rss:.2} MB\nPico (HWM): {hwm:.2} MB\nWorkers: {wrk} | Hilos: {thr}\nTareas activas: {act}",
+                bot = BOT_NAME,
+                rss = stats.rss_mb,
+                hwm = stats.hwm_mb,
+                wrk = ctx.worker_threads,
+                thr = stats.threads,
+                act = snap.active_tasks
             );
-            send_reply(messages, &remote_jid, message, me_jid, body).await;
+            send_reply(messages, ctx, &remote_jid, message, me_jid, body).await;
+            true
+        }
+        "debug" => {
+            let sub = args.trim().to_ascii_lowercase();
+            match sub.as_str() {
+                "on" => {
+                    ctx.debug.set_enabled(true);
+                    send_reply(
+                        messages,
+                        ctx,
+                        &remote_jid,
+                        message,
+                        me_jid,
+                        "Debug en consola: *ACTIVADO*".to_string(),
+                    )
+                    .await;
+                }
+                "off" => {
+                    ctx.debug.set_enabled(false);
+                    send_reply(
+                        messages,
+                        ctx,
+                        &remote_jid,
+                        message,
+                        me_jid,
+                        "Debug en consola: *DESACTIVADO*".to_string(),
+                    )
+                    .await;
+                }
+                "clear" => {
+                    ctx.debug.clear().await;
+                    send_reply(
+                        messages,
+                        ctx,
+                        &remote_jid,
+                        message,
+                        me_jid,
+                        "Contadores e historial de debug reiniciados.".to_string(),
+                    )
+                    .await;
+                }
+                _ => {
+                    let snap = ctx.debug.snapshot().await;
+                    let errs_txt = if snap.last_errors.is_empty() {
+                        "  (sin errores)".to_string()
+                    } else {
+                        snap.last_errors
+                            .iter()
+                            .rev()
+                            .take(6)
+                            .map(|e| format!("  - {e}"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    };
+                    let perf_txt = if snap.last_timings.is_empty() {
+                        "  (sin registros)".to_string()
+                    } else {
+                        snap.last_timings
+                            .iter()
+                            .rev()
+                            .take(6)
+                            .map(|t| format!("  - {t}"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    };
+                    let body = format!(
+                        "*{bot} — Debug*\n\
+                        Consola: {state}\n\
+                        Socket lag: {slag} | Recv lag: {rlag}\n\
+                        Tareas activas: {act} | Comandos: {cmds} | Errores: {errs}\n\n\
+                        *Ultimos tiempos*\n\
+                        {perf}\n\n\
+                        *Ultimos errores*\n\
+                        {err_list}\n\n\
+                        Uso: `.debug on | off | clear`",
+                        bot = BOT_NAME,
+                        state = if snap.enabled { "ON" } else { "OFF" },
+                        slag = snap.socket_lagged,
+                        rlag = snap.recv_lagged,
+                        act = snap.active_tasks,
+                        cmds = snap.total_commands,
+                        errs = snap.total_errors,
+                        perf = perf_txt,
+                        err_list = errs_txt
+                    );
+                    send_reply(messages, ctx, &remote_jid, message, me_jid, body).await;
+                }
+            }
             true
         }
         "help" | "menu" => {
             let p = ctx.prefixes.first().map(String::as_str).unwrap_or(".");
             let body = format!(
-                "*{} — Comandos*\n\
-                Prefijos: {}\n\n\
+                "*{bot} — Comandos*\n\
+                Prefijos: {prefs}\n\n\
                 [system]\n\
-                - `{}info` / `{}aura`\n\
-                - `{}ping`\n\
-                - `{}ram`\n\
-                - `{}help`\n\n\
+                - `{p}info` / `{p}aura`\n\
+                - `{p}ping`\n\
+                - `{p}ram`\n\
+                - `{p}debug [on|off|clear]`\n\
+                - `{p}help`\n\n\
                 [sticker]\n\
-                - `{}s` / `{}sticker`",
-                BOT_NAME,
-                ctx.prefixes.join("  "),
-                p,
-                p,
-                p,
-                p,
-                p,
-                p,
-                p
+                - `{p}s` / `{p}sticker`",
+                bot = BOT_NAME,
+                prefs = ctx.prefixes.join("  "),
+                p = p
             );
-            send_reply(messages, &remote_jid, message, me_jid, body).await;
+            send_reply(messages, ctx, &remote_jid, message, me_jid, body).await;
             true
         }
         _ => false,

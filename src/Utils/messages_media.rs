@@ -241,13 +241,23 @@ pub fn extract_host(url: &str) -> Option<String> {
     Some(host.to_string())
 }
 
-fn build_http_client(timeout_ms: Option<u64>) -> Result<reqwest::Client, MediaError> {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let mut builder = reqwest::Client::builder();
-    if let Some(ms) = timeout_ms {
-        builder = builder.timeout(Duration::from_millis(ms));
+fn build_http_client(_timeout_ms: Option<u64>) -> Result<reqwest::Client, MediaError> {
+    static SHARED_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    if let Some(client) = SHARED_CLIENT.get() {
+        return Ok(client.clone());
     }
-    Ok(builder.build()?)
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let client = reqwest::Client::builder()
+        .tcp_nodelay(true)
+        .tcp_keepalive(Duration::from_secs(30))
+        .pool_idle_timeout(Duration::from_secs(90))
+        .pool_max_idle_per_host(16)
+        .http2_adaptive_window(true)
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()?;
+    let _ = SHARED_CLIENT.set(client.clone());
+    Ok(client)
 }
 
 pub async fn read_media_upload_bytes(

@@ -13,8 +13,20 @@ use sha2::{Digest, Sha256};
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
+
+use crate::BotContext;
+
+static STICKER_SEQ: AtomicU64 = AtomicU64::new(0);
+
+struct StickerTimings {
+    dl_ms: f64,
+    webp_ms: f64,
+    enc_ms: f64,
+    up_ms: f64,
+}
 
 fn find_image_message(msg: &WaMessage) -> Option<ImageMessage> {
     let proto = msg.message.as_ref()?;
@@ -43,7 +55,8 @@ async fn encode_sticker_webp(
     img: &ImageMessage,
     tmp_dir: &Path,
 ) -> Result<Vec<u8>, String> {
-    let stamp = format!("{}_{}", std::process::id(), unix_timestamp_seconds());
+    let seq = STICKER_SEQ.fetch_add(1, Ordering::Relaxed);
+    let stamp = format!("{}_{}_{}", std::process::id(), unix_timestamp_seconds(), seq);
     let in_img = tmp_dir.join(format!("aura_in_{}.img", stamp));
     let out_webp = tmp_dir.join(format!("aura_out_{}.webp", stamp));
 
@@ -59,17 +72,19 @@ async fn encode_sticker_webp(
         .arg("-loglevel")
         .arg("error")
         .arg("-threads")
-        .arg("4")
+        .arg("8")
+        .arg("-filter_threads")
+        .arg("8")
         .arg("-i")
         .arg(&in_img)
         .arg("-vf")
-        .arg("scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000")
+        .arg("scale=512:512:force_original_aspect_ratio=decrease:flags=fast_bilinear,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000")
         .arg("-c:v")
         .arg("libwebp")
         .arg("-quality")
-        .arg("70")
+        .arg("72")
         .arg("-compression_level")
-        .arg("2")
+        .arg("0")
         .arg(&out_webp)
         .output()
         .await
@@ -77,11 +92,13 @@ async fn encode_sticker_webp(
         .unwrap_or(false);
 
     if ffmpeg_ok {
-        let _ = tokio::fs::remove_file(&in_img).await;
         let bytes = tokio::fs::read(&out_webp)
             .await
             .map_err(|e| format!("read webp: {}", e))?;
-        let _ = tokio::fs::remove_file(&out_webp).await;
+        tokio::spawn(async move {
+            let _ = tokio::fs::remove_file(in_img).await;
+            let _ = tokio::fs::remove_file(out_webp).await;
+        });
         return Ok(bytes);
     }
 
@@ -93,11 +110,10 @@ async fn encode_sticker_webp(
 
     let cwebp_ok = tokio::process::Command::new("cwebp")
         .arg("-q")
-        .arg("70")
+        .arg("72")
         .arg("-m")
-        .arg("2")
+        .arg("0")
         .arg("-mt")
-        .arg("-af")
         .arg("-resize")
         .arg(resize_args.0)
         .arg(resize_args.1)
@@ -109,45 +125,54 @@ async fn encode_sticker_webp(
         .map(|o| o.status.success())
         .unwrap_or(false);
 
-    let _ = tokio::fs::remove_file(&in_img).await;
-
     if cwebp_ok {
         let bytes = tokio::fs::read(&out_webp)
             .await
             .map_err(|e| format!("read webp: {}", e))?;
-        let _ = tokio::fs::remove_file(&out_webp).await;
+        tokio::spawn(async move {
+            let _ = tokio::fs::remove_file(in_img).await;
+            let _ = tokio::fs::remove_file(out_webp).await;
+        });
         return Ok(bytes);
     }
 
-    let _ = tokio::fs::remove_file(&out_webp).await;
+    tokio::spawn(async move {
+        let _ = tokio::fs::remove_file(in_img).await;
+        let _ = tokio::fs::remove_file(out_webp).await;
+    });
     Ok(raw_bytes.to_vec())
 }
 
 async fn build_sticker_from_image(
     messages: &Arc<MessagesSocket>,
     img: &ImageMessage,
-) -> Result<StickerMessage, String> {
+) -> Result<(StickerMessage, StickerTimings), String> {
+    let t_dl = Instant::now();
     let dl_msg = DownloadableMessage {
         media_key: img.media_key.clone(),
         direct_path: img.direct_path.clone(),
         url: img.url.clone(),
     };
     let dl_opts = MediaDownloadOptions {
-        timeout_ms: Some(6_000),
+        timeout_ms: Some(8_000),
         ..Default::default()
     };
 
     let raw_bytes = download_content_from_message(&dl_msg, MediaType::Image, &dl_opts)
         .await
         .map_err(|e| format!("descarga: {}", e))?;
+    let dl_ms = t_dl.elapsed().as_secs_f64() * 1000.0;
 
+    let t_webp = Instant::now();
     let tmp_dir = std::env::var_os("PREFIX")
         .map(|p| PathBuf::from(p).join("tmp"))
         .unwrap_or_else(|| PathBuf::from("/tmp"));
     let _ = tokio::fs::create_dir_all(&tmp_dir).await;
 
     let sticker_bytes = encode_sticker_webp(&raw_bytes, img, &tmp_dir).await?;
+    let webp_ms = t_webp.elapsed().as_secs_f64() * 1000.0;
 
+    let t_enc = Instant::now();
     let (sha_vec, final_bytes) = tokio::task::spawn_blocking(move || {
         let mut h = Sha256::new();
         h.update(&sticker_bytes);
@@ -165,7 +190,9 @@ async fn build_sticker_from_image(
         .await
         .map(|m| m.len())
         .unwrap_or(0);
+    let enc_ms = t_enc.elapsed().as_secs_f64() * 1000.0;
 
+    let t_up = Instant::now();
     let file_enc_sha256_b64 = BASE64.encode(&enc.file_enc_sha256);
     let headers = HashMap::new();
     let upload_res = upload_media_to_server(
@@ -175,9 +202,10 @@ async fn build_sticker_from_image(
         messages,
         &[],
         &headers,
-        Some(6_000),
+        Some(8_000),
     )
     .await;
+    let up_ms = t_up.elapsed().as_secs_f64() * 1000.0;
 
     let enc_path = enc.enc_file_path.clone();
     let orig_path = enc.original_file_path.clone();
@@ -190,7 +218,7 @@ async fn build_sticker_from_image(
 
     let up = upload_res.map_err(|e| format!("upload: {}", e))?;
 
-    Ok(StickerMessage {
+    let sticker = StickerMessage {
         url: Some(up.media_url),
         direct_path: Some(up.direct_path),
         media_key: Some(enc.media_key),
@@ -202,11 +230,22 @@ async fn build_sticker_from_image(
         height: Some(512),
         is_animated: Some(false),
         ..Default::default()
-    })
+    };
+
+    Ok((
+        sticker,
+        StickerTimings {
+            dl_ms,
+            webp_ms,
+            enc_ms,
+            up_ms,
+        },
+    ))
 }
 
 async fn send_text(
     messages: &Arc<MessagesSocket>,
+    ctx: &BotContext,
     remote_jid: &str,
     quoted: WaMessage,
     user_jid: Option<String>,
@@ -225,20 +264,19 @@ async fn send_text(
         background_color: None,
         font: None,
     };
-    let _ = messages
-        .send_message(
-            remote_jid,
-            AnyMessageContent::Raw(Message {
-                conversation: Some(text),
-                ..Default::default()
-            }),
-            opts,
-        )
-        .await;
+    if let Err(err) = messages
+        .send_message(remote_jid, AnyMessageContent::Text(text), opts)
+        .await
+    {
+        ctx.debug
+            .record_error("sticker_text", format!("{}: {}", remote_jid, err))
+            .await;
+    }
 }
 
 pub async fn run(
     messages: &Arc<MessagesSocket>,
+    ctx: &BotContext,
     message: WaMessage,
     cmd: &str,
     _args: &str,
@@ -254,6 +292,7 @@ pub async fn run(
     let Some(img) = find_image_message(&message) else {
         send_text(
             messages,
+            ctx,
             &remote_jid,
             message,
             me_jid,
@@ -263,12 +302,14 @@ pub async fn run(
         return true;
     };
 
-    let t_start = Instant::now();
-    let sticker_msg = match build_sticker_from_image(messages, &img).await {
-        Ok(s) => s,
+    let t_total = Instant::now();
+    let (sticker_msg, timings) = match build_sticker_from_image(messages, &img).await {
+        Ok(res) => res,
         Err(err) => {
+            ctx.debug.record_error("sticker", &err).await;
             send_text(
                 messages,
+                ctx,
                 &remote_jid,
                 message,
                 me_jid,
@@ -293,6 +334,7 @@ pub async fn run(
         font: None,
     };
 
+    let t_send = Instant::now();
     match messages
         .send_message(
             &remote_jid,
@@ -305,19 +347,33 @@ pub async fn run(
         .await
     {
         Ok(_) => {
-            let elapsed_ms = t_start.elapsed().as_secs_f64() * 1000.0;
+            let send_ms = t_send.elapsed().as_secs_f64() * 1000.0;
+            let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
+            let summary = format!(
+                "total={:.0}ms (dl={:.0} webp={:.0} enc={:.0} up={:.0} send={:.0})",
+                total_ms, timings.dl_ms, timings.webp_ms, timings.enc_ms, timings.up_ms, send_ms
+            );
+            ctx.debug.record_timing("sticker", &summary).await;
             send_text(
                 messages,
+                ctx,
                 &remote_jid,
                 message,
                 me_jid,
-                format!("*Sticker enviado* en *{:.2} ms*", elapsed_ms),
+                format!(
+                    "*Sticker listo* en *{:.2} ms*\n`dl {:.0} | webp {:.0} | enc {:.0} | up {:.0} | send {:.0}`",
+                    total_ms, timings.dl_ms, timings.webp_ms, timings.enc_ms, timings.up_ms, send_ms
+                ),
             )
             .await;
         }
         Err(err) => {
+            ctx.debug
+                .record_error("sticker_send", format!("{}", err))
+                .await;
             send_text(
                 messages,
+                ctx,
                 &remote_jid,
                 message,
                 me_jid,

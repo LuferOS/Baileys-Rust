@@ -2,16 +2,18 @@ use super::types::{SocketReadyState, WebSocketError, WebSocketEvent};
 use crate::defaults::DEFAULT_ORIGIN;
 use crate::types::SocketConfig;
 use futures_util::{SinkExt, StreamExt};
+use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
-use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::{HeaderName, HeaderValue};
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{connect_async_with_config, MaybeTlsStream};
 
 enum WsCommand {
     SendBinary(Vec<u8>),
@@ -23,6 +25,8 @@ enum WsCommand {
 pub struct WebSocketSender {
     state: Arc<AtomicU8>,
     cmd_tx: mpsc::UnboundedSender<WsCommand>,
+    peer_addr: Option<SocketAddr>,
+    local_addr: Option<SocketAddr>,
 }
 
 impl WebSocketSender {
@@ -32,6 +36,14 @@ impl WebSocketSender {
 
     pub fn is_open(&self) -> bool {
         self.ready_state() == SocketReadyState::Open
+    }
+
+    pub fn peer_addr(&self) -> Option<SocketAddr> {
+        self.peer_addr
+    }
+
+    pub fn local_addr(&self) -> Option<SocketAddr> {
+        self.local_addr
     }
 
     pub fn send_bytes(&self, data: Vec<u8>) -> bool {
@@ -65,6 +77,8 @@ pub struct WebSocketClient {
     state: Arc<AtomicU8>,
     cmd_tx: Option<mpsc::UnboundedSender<WsCommand>>,
     event_rx: Option<mpsc::UnboundedReceiver<WebSocketEvent>>,
+    peer_addr: Option<SocketAddr>,
+    local_addr: Option<SocketAddr>,
 }
 
 impl WebSocketClient {
@@ -75,6 +89,8 @@ impl WebSocketClient {
             state: Arc::new(AtomicU8::new(SocketReadyState::Closed as u8)),
             cmd_tx: None,
             event_rx: None,
+            peer_addr: None,
+            local_addr: None,
         }
     }
 
@@ -96,6 +112,14 @@ impl WebSocketClient {
 
     pub fn is_connecting(&self) -> bool {
         self.ready_state() == SocketReadyState::Connecting
+    }
+
+    pub fn peer_addr(&self) -> Option<SocketAddr> {
+        self.peer_addr
+    }
+
+    pub fn local_addr(&self) -> Option<SocketAddr> {
+        self.local_addr
     }
 
     pub async fn connect(&mut self) -> Result<(), WebSocketError> {
@@ -121,8 +145,16 @@ impl WebSocketClient {
             request.headers_mut().insert(name, value);
         }
 
+        let mut ws_cfg = WebSocketConfig::default();
+        ws_cfg.write_buffer_size = 0;
+        ws_cfg.max_write_buffer_size = 256 * 1024;
+
         let connect_dur = Duration::from_millis(self.config.connect_timeout_ms);
-        let ws_result = timeout(connect_dur, connect_async(request)).await;
+        let ws_result = timeout(
+            connect_dur,
+            connect_async_with_config(request, Some(ws_cfg), true),
+        )
+        .await;
 
         let (ws_stream, _) = match ws_result {
             Ok(Ok(pair)) => pair,
@@ -138,6 +170,17 @@ impl WebSocketClient {
             }
         };
 
+        let (peer_addr, local_addr) = match ws_stream.get_ref() {
+            MaybeTlsStream::Plain(tcp) => (tcp.peer_addr().ok(), tcp.local_addr().ok()),
+            MaybeTlsStream::Rustls(tls) => {
+                let tcp = tls.get_ref().0;
+                (tcp.peer_addr().ok(), tcp.local_addr().ok())
+            }
+            _ => (None, None),
+        };
+        self.peer_addr = peer_addr;
+        self.local_addr = local_addr;
+
         let (mut write, mut read) = ws_stream.split();
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<WsCommand>();
         let (event_tx, event_rx) = mpsc::unbounded_channel::<WebSocketEvent>();
@@ -149,21 +192,53 @@ impl WebSocketClient {
         let write_state = Arc::clone(&self.state);
         let write_event_tx = event_tx.clone();
         tokio::spawn(async move {
-            while let Some(cmd) = cmd_rx.recv().await {
-                let res = match cmd {
-                    WsCommand::SendBinary(data) => write.send(Message::Binary(data)).await,
-                    WsCommand::SendText(text) => write.send(Message::Text(text)).await,
-                    WsCommand::Close => {
-                        write_state.store(SocketReadyState::Closing as u8, Ordering::SeqCst);
-                        let close_res = write.send(Message::Close(None)).await;
-                        let _ = write.close().await;
-                        write_state.store(SocketReadyState::Closed as u8, Ordering::SeqCst);
-                        let _ = write_event_tx.send(WebSocketEvent::Close(None));
-                        close_res
+            while let Some(first) = cmd_rx.recv().await {
+                let mut batch = Vec::with_capacity(8);
+                batch.push(first);
+                while batch.len() < 32 {
+                    match cmd_rx.try_recv() {
+                        Ok(next) => batch.push(next),
+                        Err(_) => break,
                     }
-                };
+                }
 
-                if let Err(err) = res {
+                let mut closing = false;
+                let mut failed: Option<String> = None;
+
+                for cmd in batch {
+                    match cmd {
+                        WsCommand::SendBinary(data) => {
+                            if let Err(err) = write.feed(Message::Binary(data)).await {
+                                failed = Some(err.to_string());
+                                break;
+                            }
+                        }
+                        WsCommand::SendText(text) => {
+                            if let Err(err) = write.feed(Message::Text(text)).await {
+                                failed = Some(err.to_string());
+                                break;
+                            }
+                        }
+                        WsCommand::Close => {
+                            closing = true;
+                            write_state.store(SocketReadyState::Closing as u8, Ordering::SeqCst);
+                            let _ = write.send(Message::Close(None)).await;
+                            let _ = write.close().await;
+                            write_state.store(SocketReadyState::Closed as u8, Ordering::SeqCst);
+                            let _ = write_event_tx.send(WebSocketEvent::Close(None));
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(err) = failed {
+                    let _ = write_event_tx.send(WebSocketEvent::Error(err));
+                    break;
+                }
+                if closing {
+                    break;
+                }
+                if let Err(err) = write.flush().await {
                     let _ = write_event_tx.send(WebSocketEvent::Error(err.to_string()));
                     break;
                 }
@@ -216,6 +291,8 @@ impl WebSocketClient {
             WebSocketSender {
                 state: Arc::clone(&self.state),
                 cmd_tx,
+                peer_addr: self.peer_addr,
+                local_addr: self.local_addr,
             },
             WebSocketReceiver { event_rx },
         ))

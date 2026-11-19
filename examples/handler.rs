@@ -5,6 +5,7 @@ use baileys_rs::types::WaMessage;
 use baileys_rs::utils::normalize_message_content;
 use std::borrow::Borrow;
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::{cmd, BotContext};
 
@@ -58,53 +59,51 @@ pub async fn dispatch(
     cmd_name: &str,
     args: &str,
 ) {
+    let t0 = Instant::now();
+    ctx.debug
+        .log("dispatch", format!(".{} args=\"{}\"", cmd_name, args));
+
     let creds = messages.socket.creds().await;
     let me_jid = creds.me.as_ref().map(|m| m.id.clone());
 
-    if cmd::system::run(messages, ctx, message.clone(), cmd_name, args, me_jid.clone()).await {
-        return;
+    let handled = if cmd::system::run(messages, ctx, message.clone(), cmd_name, args, me_jid.clone()).await {
+        true
+    } else if cmd::sticker::run(messages, ctx, message.clone(), cmd_name, args, me_jid.clone()).await {
+        true
+    } else if cmd::group::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
+        true
+    } else if cmd::download::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
+        true
+    } else if cmd::utils::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
+        true
+    } else if cmd::ai::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
+        true
+    } else if cmd::economy::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
+        true
+    } else if cmd::gacha::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
+        true
+    } else if cmd::games::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
+        true
+    } else if cmd::funy::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
+        true
+    } else if cmd::interaccion::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
+        true
+    } else if cmd::profile::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
+        true
+    } else if cmd::search::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
+        true
+    } else if cmd::socket::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
+        true
+    } else if cmd::stalk::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
+        true
+    } else {
+        cmd::nsfw::run(messages, message, cmd_name, args, me_jid).await
+    };
+
+    if handled {
+        ctx.debug.log(
+            "dispatch",
+            format!(".{} completado en {:.2} ms", cmd_name, t0.elapsed().as_secs_f64() * 1000.0),
+        );
     }
-    if cmd::sticker::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
-        return;
-    }
-    if cmd::group::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
-        return;
-    }
-    if cmd::download::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
-        return;
-    }
-    if cmd::utils::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
-        return;
-    }
-    if cmd::ai::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
-        return;
-    }
-    if cmd::economy::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
-        return;
-    }
-    if cmd::gacha::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
-        return;
-    }
-    if cmd::games::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
-        return;
-    }
-    if cmd::funy::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
-        return;
-    }
-    if cmd::interaccion::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
-        return;
-    }
-    if cmd::profile::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
-        return;
-    }
-    if cmd::search::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
-        return;
-    }
-    if cmd::socket::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
-        return;
-    }
-    if cmd::stalk::run(messages, message.clone(), cmd_name, args, me_jid.clone()).await {
-        return;
-    }
-    let _ = cmd::nsfw::run(messages, message, cmd_name, args, me_jid).await;
 }

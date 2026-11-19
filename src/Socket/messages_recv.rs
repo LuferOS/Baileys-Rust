@@ -376,7 +376,7 @@ pub struct MessagesRecvSocket {
 
 impl MessagesRecvSocket {
     pub fn new(messages: Arc<MessagesSocket>) -> Self {
-        let (events_tx, _) = broadcast::channel(256);
+        let (events_tx, _) = broadcast::channel(1024);
         Self {
             messages,
             retry_counts: AsyncMutex::new(HashMap::new()),
