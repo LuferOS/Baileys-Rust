@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 fn sanitize_proto3_enums(src: &str) -> String {
     let bytes = src.as_bytes();
@@ -142,8 +143,22 @@ fn fix_enum_body(body: &str, zero_counter: &mut usize) -> String {
     result
 }
 
+fn detect_rustc_version() -> String {
+    let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+    Command::new(rustc)
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=WAProto/WAProto.proto");
+    println!("cargo:rustc-env=BAILEYS_RUSTC_VERSION={}", detect_rustc_version());
+
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let proto_out = out_dir.join("waproto_gen");
     let _ = fs::remove_dir_all(&proto_out);
