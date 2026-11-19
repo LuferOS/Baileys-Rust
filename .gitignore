@@ -1,4 +1,4 @@
 /target
-Cargo.lock
-*.swp
-.DS_Store
+auth_info/
+auth_info_bot/
+*.bak
