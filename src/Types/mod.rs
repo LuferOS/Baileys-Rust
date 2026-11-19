@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod business;
 pub mod group;
 pub mod message;
 pub mod mex;
@@ -7,6 +8,7 @@ pub mod socket;
 pub mod state;
 
 pub use auth::*;
+pub use business::*;
 pub use group::*;
 pub use message::*;
 pub use mex::*;

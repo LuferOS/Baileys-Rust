@@ -1,4 +1,5 @@
 pub mod browser_utils;
+pub mod business;
 pub mod companion_reg_client_utils;
 pub mod crypto;
 pub mod decode_wa_message;
@@ -11,6 +12,7 @@ pub mod use_multi_file_auth_state;
 pub mod validate_connection;
 
 pub use browser_utils::*;
+pub use business::*;
 pub use companion_reg_client_utils::*;
 pub use crypto::*;
 pub use decode_wa_message::*;
