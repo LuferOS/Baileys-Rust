@@ -231,6 +231,16 @@ impl WaSocket {
         self.inner.creds.lock().await.clone()
     }
 
+    pub async fn update_adv_secret_key(&self, adv_secret_key: String) {
+        let mut creds = self.inner.creds.lock().await;
+        creds.adv_secret_key = adv_secret_key;
+        let snapshot = creds.clone();
+        let _ = self
+            .inner
+            .events_tx
+            .send(SocketEvent::CredsUpdate(Box::new(snapshot)));
+    }
+
     pub fn send_raw_message(&self, data: &[u8]) -> Result<(), SocketError> {
         if !self.is_open() {
             return Err(SocketError::ConnectionClosed);

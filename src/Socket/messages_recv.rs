@@ -994,7 +994,11 @@ impl MessagesRecvSocket {
         identity_payload.extend_from_slice(&companion_shared_key);
         identity_payload.extend_from_slice(&identity_shared);
         identity_payload.extend_from_slice(&random);
-        let _adv_secret_b64 = BASE64.encode(hkdf(&identity_payload, 32, None, b"adv_secret")?);
+        let adv_secret_b64 = BASE64.encode(hkdf(&identity_payload, 32, None, b"adv_secret")?);
+        self.messages
+            .socket
+            .update_adv_secret_key(adv_secret_b64)
+            .await;
 
         let iq = BinaryNode {
             tag: "iq".to_string(),
