@@ -3,7 +3,7 @@ use baileys_rs::proto::Message;
 use baileys_rs::signal::LibSignalRepository;
 use baileys_rs::socket::{MessagesRecvSocket, MessagesSocket, RecvEvent, WaSocket};
 use baileys_rs::types::{
-    AuthenticationCreds, ConnectionState, DisconnectReason, SocketConfig, SocketEvent, WaMessage,
+    AuthenticationCreds, ConnectionState, DisconnectReason, SocketConfig, SocketEvent,
     WaPresence,
 };
 use baileys_rs::utils::{
