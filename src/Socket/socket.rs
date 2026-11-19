@@ -449,7 +449,8 @@ impl WaSocket {
             }])),
         };
 
-        self.send_node(&node)?;
+        let response = self.query(node, Some(10_000)).await?;
+        assert_node_error_free(&response)?;
         Ok(pairing_code)
     }
 

@@ -377,8 +377,8 @@ pub async fn run_aura(cfg: AuraConfig) -> Result<(), Box<dyn std::error::Error>>
             }
         });
 
-        let mut reconnect = false;
         let pairing_mode = cfg.pair_phone.as_ref().is_some_and(|p| !p.is_empty());
+        let mut reconnect = true;
 
         loop {
             match socket_rx.recv().await {
@@ -403,7 +403,9 @@ pub async fn run_aura(cfg: AuraConfig) -> Result<(), Box<dyn std::error::Error>>
                         ctx.debug
                             .record_error("disconnect", format!("codigo={:?}", code))
                             .await;
-                        reconnect = code != Some(DisconnectReason::LoggedOut as u16);
+                        if code == Some(DisconnectReason::LoggedOut as u16) {
+                            reconnect = false;
+                        }
                         break;
                     }
                 }
