@@ -1,6 +1,7 @@
 #[path = "Client/mod.rs"]
 pub mod client;
 pub mod business;
+pub mod chats;
 pub mod communities;
 pub mod groups;
 pub mod messages_recv;
@@ -11,6 +12,7 @@ pub mod socket;
 pub mod usync;
 
 pub use business::*;
+pub use chats::*;
 pub use client::*;
 pub use communities::*;
 pub use groups::*;
