@@ -216,46 +216,139 @@ fn is_self_only_protocol_type(proto_type: i32) -> bool {
         || proto_type == protocol_message::Type::PeerDataOperationRequestResponseMessage as i32
 }
 
-fn unwrap_future_proof_mut<'a>(mut current: &'a mut Message) -> &'a mut Message {
-    for _ in 0..5 {
-        let next = if let Some(ref mut w) = current.ephemeral_message {
-            let f: &mut FutureProofMessage = BorrowMut::borrow_mut(w);
-            f.message.as_mut().map(|m| BorrowMut::borrow_mut(m))
-        } else if let Some(ref mut w) = current.view_once_message {
-            let f: &mut FutureProofMessage = BorrowMut::borrow_mut(w);
-            f.message.as_mut().map(|m| BorrowMut::borrow_mut(m))
-        } else if let Some(ref mut w) = current.document_with_caption_message {
-            let f: &mut FutureProofMessage = BorrowMut::borrow_mut(w);
-            f.message.as_mut().map(|m| BorrowMut::borrow_mut(m))
-        } else if let Some(ref mut w) = current.view_once_message_v2 {
-            let f: &mut FutureProofMessage = BorrowMut::borrow_mut(w);
-            f.message.as_mut().map(|m| BorrowMut::borrow_mut(m))
-        } else if let Some(ref mut w) = current.view_once_message_v2_extension {
-            let f: &mut FutureProofMessage = BorrowMut::borrow_mut(w);
-            f.message.as_mut().map(|m| BorrowMut::borrow_mut(m))
-        } else if let Some(ref mut w) = current.edited_message {
-            let f: &mut FutureProofMessage = BorrowMut::borrow_mut(w);
-            f.message.as_mut().map(|m| BorrowMut::borrow_mut(m))
-        } else if let Some(ref mut w) = current.associated_child_message {
-            let f: &mut FutureProofMessage = BorrowMut::borrow_mut(w);
-            f.message.as_mut().map(|m| BorrowMut::borrow_mut(m))
-        } else if let Some(ref mut w) = current.group_status_message {
-            let f: &mut FutureProofMessage = BorrowMut::borrow_mut(w);
-            f.message.as_mut().map(|m| BorrowMut::borrow_mut(m))
-        } else if let Some(ref mut w) = current.group_status_message_v2 {
-            let f: &mut FutureProofMessage = BorrowMut::borrow_mut(w);
-            f.message.as_mut().map(|m| BorrowMut::borrow_mut(m))
-        } else {
-            None
-        };
-
-        if let Some(inner) = next {
-            current = inner;
-        } else {
-            break;
-        }
+fn unwrap_future_proof_mut_step(current: &mut Message, depth: usize) -> &mut Message {
+    if depth == 0 {
+        return current;
     }
-    current
+
+    let branch = if current
+        .ephemeral_message
+        .as_ref()
+        .and_then(|w| Borrow::<FutureProofMessage>::borrow(w).message.as_ref())
+        .is_some()
+    {
+        1
+    } else if current
+        .view_once_message
+        .as_ref()
+        .and_then(|w| Borrow::<FutureProofMessage>::borrow(w).message.as_ref())
+        .is_some()
+    {
+        2
+    } else if current
+        .document_with_caption_message
+        .as_ref()
+        .and_then(|w| Borrow::<FutureProofMessage>::borrow(w).message.as_ref())
+        .is_some()
+    {
+        3
+    } else if current
+        .view_once_message_v2
+        .as_ref()
+        .and_then(|w| Borrow::<FutureProofMessage>::borrow(w).message.as_ref())
+        .is_some()
+    {
+        4
+    } else if current
+        .view_once_message_v2_extension
+        .as_ref()
+        .and_then(|w| Borrow::<FutureProofMessage>::borrow(w).message.as_ref())
+        .is_some()
+    {
+        5
+    } else if current
+        .edited_message
+        .as_ref()
+        .and_then(|w| Borrow::<FutureProofMessage>::borrow(w).message.as_ref())
+        .is_some()
+    {
+        6
+    } else if current
+        .associated_child_message
+        .as_ref()
+        .and_then(|w| Borrow::<FutureProofMessage>::borrow(w).message.as_ref())
+        .is_some()
+    {
+        7
+    } else if current
+        .group_status_message
+        .as_ref()
+        .and_then(|w| Borrow::<FutureProofMessage>::borrow(w).message.as_ref())
+        .is_some()
+    {
+        8
+    } else if current
+        .group_status_message_v2
+        .as_ref()
+        .and_then(|w| Borrow::<FutureProofMessage>::borrow(w).message.as_ref())
+        .is_some()
+    {
+        9
+    } else {
+        0
+    };
+
+    let next = match branch {
+        1 => BorrowMut::<FutureProofMessage>::borrow_mut(
+            current.ephemeral_message.as_mut().unwrap(),
+        )
+        .message
+        .as_mut()
+        .unwrap(),
+        2 => BorrowMut::<FutureProofMessage>::borrow_mut(
+            current.view_once_message.as_mut().unwrap(),
+        )
+        .message
+        .as_mut()
+        .unwrap(),
+        3 => BorrowMut::<FutureProofMessage>::borrow_mut(
+            current.document_with_caption_message.as_mut().unwrap(),
+        )
+        .message
+        .as_mut()
+        .unwrap(),
+        4 => BorrowMut::<FutureProofMessage>::borrow_mut(
+            current.view_once_message_v2.as_mut().unwrap(),
+        )
+        .message
+        .as_mut()
+        .unwrap(),
+        5 => BorrowMut::<FutureProofMessage>::borrow_mut(
+            current.view_once_message_v2_extension.as_mut().unwrap(),
+        )
+        .message
+        .as_mut()
+        .unwrap(),
+        6 => BorrowMut::<FutureProofMessage>::borrow_mut(current.edited_message.as_mut().unwrap())
+            .message
+            .as_mut()
+            .unwrap(),
+        7 => BorrowMut::<FutureProofMessage>::borrow_mut(
+            current.associated_child_message.as_mut().unwrap(),
+        )
+        .message
+        .as_mut()
+        .unwrap(),
+        8 => BorrowMut::<FutureProofMessage>::borrow_mut(
+            current.group_status_message.as_mut().unwrap(),
+        )
+        .message
+        .as_mut()
+        .unwrap(),
+        9 => BorrowMut::<FutureProofMessage>::borrow_mut(
+            current.group_status_message_v2.as_mut().unwrap(),
+        )
+        .message
+        .as_mut()
+        .unwrap(),
+        _ => return current,
+    };
+
+    unwrap_future_proof_mut_step(BorrowMut::borrow_mut(next), depth - 1)
+}
+
+fn unwrap_future_proof_mut(current: &mut Message) -> &mut Message {
+    unwrap_future_proof_mut_step(current, 5)
 }
 
 fn normalise_jid_preserving_hosted(jid: Option<&str>) -> Option<String> {
@@ -332,13 +425,11 @@ pub fn is_real_message(message: &WaMessage) -> bool {
 
     (normalized.is_some() || stub_is_real)
         && has_some_content
-        && normalized
-            .as_ref()
-            .is_none_or(|c| {
-                c.protocol_message.is_none()
-                    && c.reaction_message.is_none()
-                    && c.poll_update_message.is_none()
-            })
+        && normalized.as_ref().is_none_or(|c| {
+            c.protocol_message.is_none()
+                && c.reaction_message.is_none()
+                && c.poll_update_message.is_none()
+        })
 }
 
 pub fn should_increment_chat_unread(message: &WaMessage) -> bool {
@@ -752,16 +843,15 @@ where
                     if let Ok(decoded) = LidMigrationMappingSyncPayload::decode(payload) {
                         let mut pairs = Vec::new();
                         for mapping in &decoded.pn_to_lid_mappings {
-                            let pn = mapping.pn.as_ref().map(|v| v.to_string());
+                            let pn = mapping.pn;
                             let lid = mapping
                                 .latest_lid
-                                .as_ref()
-                                .or(mapping.assigned_lid.as_ref())
-                                .map(|v| v.to_string());
-                            if let (Some(pn_s), Some(lid_s)) = (pn, lid) {
+                                .filter(|&v| v != 0)
+                                .unwrap_or(mapping.assigned_lid);
+                            if pn != 0 && lid != 0 {
                                 pairs.push(LidMapping {
-                                    lid: format!("{}@lid", lid_s),
-                                    pn: format!("{}@s.whatsapp.net", pn_s),
+                                    lid: format!("{}@lid", lid),
+                                    pn: format!("{}@s.whatsapp.net", pn),
                                 });
                             }
                         }
@@ -803,13 +893,10 @@ where
         if let Some(ref creation_proto_key) = enc_event.event_creation_message_key {
             let creation_key = WaMessageKey::from_proto(creation_proto_key);
             if let Some(event_msg) = get_message(creation_key.clone()).await {
-                let enc_key = event_msg
-                    .message_context_info
-                    .as_ref()
-                    .and_then(|m| {
-                        let inner: &MessageContextInfo = Borrow::borrow(m);
-                        inner.message_secret.as_deref()
-                    });
+                let enc_key = event_msg.message_context_info.as_ref().and_then(|m| {
+                    let inner: &MessageContextInfo = Borrow::borrow(m);
+                    inner.message_secret.as_deref()
+                });
                 if let (Some(event_enc_key), Some(enc_payload), Some(enc_iv), Some(event_msg_id)) = (
                     enc_key,
                     enc_event.enc_payload.as_deref(),
