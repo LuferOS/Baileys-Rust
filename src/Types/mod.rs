@@ -7,6 +7,7 @@ pub mod mex;
 pub mod signal;
 pub mod socket;
 pub mod state;
+pub mod sync;
 
 pub use auth::*;
 pub use business::*;
@@ -17,3 +18,4 @@ pub use mex::*;
 pub use signal::*;
 pub use socket::*;
 pub use state::*;
+pub use sync::*;
