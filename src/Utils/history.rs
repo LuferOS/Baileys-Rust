@@ -67,7 +67,8 @@ fn extract_pn_from_messages(messages: &[HistorySyncMsg]) -> Option<String> {
         let Some(ref message) = msg_item.message else {
             continue;
         };
-        if message.key.from_me != Some(true) || message.user_receipt.is_empty() {
+        let from_me = message.key.as_ref().and_then(|k| k.from_me) == Some(true);
+        if !from_me || message.user_receipt.is_empty() {
             continue;
         }
         let user_jid = &message.user_receipt[0].user_jid;
@@ -182,7 +183,8 @@ pub fn process_history_message(item: &HistorySync) -> ProcessedHistory {
                     });
                 }
 
-                if message.key.from_me != Some(true) && last_message_recv_timestamp.is_none() {
+                let from_me = message.key.as_ref().and_then(|k| k.from_me) == Some(true);
+                if !from_me && last_message_recv_timestamp.is_none() {
                     last_message_recv_timestamp = message.message_timestamp;
                 }
 
@@ -196,9 +198,10 @@ pub fn process_history_message(item: &HistorySync) -> ProcessedHistory {
                         if !verified_name.is_empty() {
                             let contact_id = message
                                 .key
-                                .participant
-                                .clone()
-                                .or_else(|| message.key.remote_jid.clone())
+                                .as_ref()
+                                .and_then(|k| {
+                                    k.participant.clone().or_else(|| k.remote_jid.clone())
+                                })
                                 .unwrap_or_default();
                             contacts.push(HistoryContact {
                                 id: contact_id,
@@ -260,13 +263,10 @@ pub fn get_history_msg(message: &Message) -> Option<HistorySyncNotification> {
         .protocol_message
         .as_ref()
         .map(|p| Borrow::borrow(p))?;
-    proto_msg
-        .history_sync_notification
-        .as_ref()
-        .map(|h| {
-            let inner: &HistorySyncNotification = Borrow::borrow(h);
-            inner.clone()
-        })
+    proto_msg.history_sync_notification.as_ref().map(|h| {
+        let inner: &HistorySyncNotification = Borrow::borrow(h);
+        inner.clone()
+    })
 }
 
 #[cfg(test)]
@@ -293,12 +293,12 @@ mod tests {
                 messages: vec![
                     HistorySyncMsg {
                         message: Some(WebMessageInfo {
-                            key: MessageKey {
+                            key: Some(MessageKey {
                                 remote_jid: Some("222222@lid".to_string()),
                                 from_me: Some(true),
                                 id: Some("M1".to_string()),
                                 participant: None,
-                            },
+                            }),
                             message_timestamp: Some(1700000010),
                             user_receipt: vec![UserReceipt {
                                 user_jid: "573002222222@s.whatsapp.net".to_string(),
@@ -310,12 +310,12 @@ mod tests {
                     },
                     HistorySyncMsg {
                         message: Some(WebMessageInfo {
-                            key: MessageKey {
+                            key: Some(MessageKey {
                                 remote_jid: Some("222222@lid".to_string()),
                                 from_me: Some(false),
                                 id: Some("M0".to_string()),
                                 participant: None,
-                            },
+                            }),
                             message_timestamp: Some(1700000005),
                             ..Default::default()
                         }),
@@ -346,10 +346,16 @@ mod tests {
 
         assert_eq!(processed.chats.len(), 1);
         assert_eq!(processed.chats[0].conversation.messages.len(), 1);
-        assert_eq!(processed.chats[0].last_message_recv_timestamp, Some(1700000005));
+        assert_eq!(
+            processed.chats[0].last_message_recv_timestamp,
+            Some(1700000005)
+        );
         assert_eq!(processed.messages.len(), 2);
         assert_eq!(processed.lid_pn_mappings.len(), 2);
-        assert_eq!(processed.lid_pn_mappings[1].pn, "573002222222@s.whatsapp.net");
+        assert_eq!(
+            processed.lid_pn_mappings[1].pn,
+            "573002222222@s.whatsapp.net"
+        );
     }
 
     #[test]
