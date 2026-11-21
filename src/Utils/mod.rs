@@ -1,6 +1,7 @@
 pub mod auth_utils;
 pub mod browser_utils;
 pub mod business;
+pub mod ai_rich;
 pub mod call_telemetry;
 pub mod chat_utils;
 pub mod companion_reg_client_utils;
@@ -33,6 +34,7 @@ pub mod validate_connection;
 pub use auth_utils::*;
 pub use browser_utils::*;
 pub use business::*;
+pub use ai_rich::*;
 pub use call_telemetry::*;
 pub use chat_utils::*;
 pub use companion_reg_client_utils::*;

@@ -410,6 +410,69 @@ impl MessagesRecvSocket {
         Ok(())
     }
 
+    pub async fn reject_call_fast(
+        &self,
+        call_id: &str,
+        call_from: &str,
+        call_creator: Option<&str>,
+    ) -> Result<(), MessagesRecvError> {
+        let creds = self.messages.socket.creds().await;
+        let me_id = creds
+            .me
+            .as_ref()
+            .map(|m| m.id.clone())
+            .ok_or(MessagesRecvError::NotAuthenticated)?;
+        let creator = call_creator.unwrap_or(call_from);
+        let stanza = BinaryNode {
+            tag: "call".to_string(),
+            attrs: BinaryNodeAttributes::from([
+                ("from".to_string(), me_id),
+                ("to".to_string(), call_from.to_string()),
+            ]),
+            content: Some(BinaryNodeData::List(vec![BinaryNode {
+                tag: "reject".to_string(),
+                attrs: BinaryNodeAttributes::from([
+                    ("call-id".to_string(), call_id.to_string()),
+                    ("call-creator".to_string(), creator.to_string()),
+                    ("count".to_string(), "0".to_string()),
+                ]),
+                content: None,
+            }])),
+        };
+        let _ = self.messages.socket.query(stanza, Some(2_000)).await;
+        Ok(())
+    }
+
+    pub async fn terminate_call(
+        &self,
+        call_id: &str,
+        to: &str,
+    ) -> Result<(), MessagesRecvError> {
+        let creds = self.messages.socket.creds().await;
+        let me_id = creds
+            .me
+            .as_ref()
+            .map(|m| m.id.clone())
+            .ok_or(MessagesRecvError::NotAuthenticated)?;
+        let stanza = BinaryNode {
+            tag: "call".to_string(),
+            attrs: BinaryNodeAttributes::from([
+                ("from".to_string(), me_id),
+                ("to".to_string(), to.to_string()),
+            ]),
+            content: Some(BinaryNodeData::List(vec![BinaryNode {
+                tag: "terminate".to_string(),
+                attrs: BinaryNodeAttributes::from([
+                    ("call-id".to_string(), call_id.to_string()),
+                    ("reason".to_string(), "user_ended".to_string()),
+                ]),
+                content: None,
+            }])),
+        };
+        let _ = self.messages.socket.query(stanza, Some(2_000)).await;
+        Ok(())
+    }
+
     pub async fn reject_call(
         &self,
         call_id: &str,

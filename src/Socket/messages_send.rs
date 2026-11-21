@@ -1384,6 +1384,32 @@ impl MessagesSocket {
         self.send_message(jid, AnyMessageContent::Raw(msg), options)
             .await
     }
+
+    pub async fn send_ai_rich(
+        &self,
+        jid: &str,
+        builder: &crate::utils::AiRichBuilder,
+        options: MessageGenerationOptions,
+    ) -> Result<WaMessage, MessagesSendError> {
+        let msg = builder.build_message();
+        self.send_message(jid, AnyMessageContent::Raw(msg), options)
+            .await
+    }
+
+    pub async fn send_ai_rich_html(
+        &self,
+        jid: &str,
+        title: impl Into<String>,
+        footer: impl Into<String>,
+        html: impl Into<String>,
+        options: MessageGenerationOptions,
+    ) -> Result<WaMessage, MessagesSendError> {
+        let builder = crate::utils::AiRichBuilder::new()
+            .title(title)
+            .footer(footer)
+            .add_html_section(html, Vec::new());
+        self.send_ai_rich(jid, &builder, options).await
+    }
 }
 
 #[cfg(test)]
